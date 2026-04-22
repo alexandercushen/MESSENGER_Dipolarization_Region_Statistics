@@ -473,7 +473,7 @@ def transform_to_fac(bx_meas, by_meas, bz_meas, bx_mod, by_mod, bz_mod, rx, ry, 
 
     return b_perp, b_phi, b_par
 
-def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='xyz'):
+def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='latlon'):
     """Replace the x-axis tick labels on *ax* with multi-row ephemeris labels.
 
     Parameters
@@ -482,9 +482,10 @@ def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='xyz'):
     df : pandas.DataFrame
         Must contain columns 'time', 'ephx', 'ephy', 'ephz'.
     fontsize : float
-    coords : {'xyz', 'latlon'}
-        'xyz'    — show UT / X / Y / Z  (R_M MSM, default)
-        'latlon' — show UT / E.Lon / Lat / Alt where Alt = r - 1 R_M
+    coords : {'latlon', 'xyz'}
+        'latlon' — show UT / E.Lon / Lat / R_MSO  (default)
+                   R_MSO = sqrt(X² + Y² + (Z+0.2)²)-1, dipole offset 0.2 R_M north
+        'xyz'    — show UT / X / Y / Z  (R_M, planet-centred)
 
     Returns
     -------
@@ -501,19 +502,18 @@ def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='xyz'):
     z_arr = df['ephz'].to_numpy()
 
     if coords == 'latlon':
-        r_arr   = np.sqrt(x_arr**2 + y_arr**2 + z_arr**2)
-        lat_arr = np.degrees(np.arcsin(np.clip(z_arr / r_arr, -1, 1)))
-        lon_arr = np.degrees(np.arctan2(y_arr, x_arr)) % 360
-        alt_arr = r_arr - 1.0          # altitude above surface in R_M
-
+        r_arr     = np.sqrt(x_arr**2 + y_arr**2 + z_arr**2)
+        lat_arr   = np.degrees(np.arcsin(np.clip(z_arr / r_arr, -1, 1)))
+        lon_arr   = np.degrees(np.arctan2(y_arr, x_arr)) % 360
+        alt_mso_arr = np.sqrt(x_arr**2 + y_arr**2 + (z_arr + 0.2)**2) - 1.0
         labels = []
         for tt in tick_times:
             idx = int(np.clip(np.searchsorted(t_arr, np.datetime64(tt, 'ns')), 0, len(t_arr) - 1))
             labels.append(
                 f"{tt.strftime('%H:%M:%S')}\n{lon_arr[idx]:.1f}°\n"
-                f"{lat_arr[idx]:+.1f}°\n{alt_arr[idx]:.3f}"
+                f"{lat_arr[idx]:+.1f}°\n{alt_mso_arr[idx]:.3f}"
             )
-        row_labels = ['UT', 'E.Lon', 'Lat', 'Alt (R$_M$)']
+        row_labels = ['UT', 'E.Lon', 'Lat', 'Alt$_{MSO}$ (R$_M$)']
     else:
         labels = []
         for tt in tick_times:
@@ -923,8 +923,8 @@ def filter_orbit_segment(orb_df):
 
     criteria = (
         (orb_df['ephx'] < 0.0) &
-        (orb_df['ephz'] > -1.5) &
-        (orb_df['ephz'] < 0.7) &
+        (orb_df['ephz'] > -1.75) &
+        (orb_df['ephz'] < 1) &
         ((orb_df['ephx']**2 + orb_df['ephy']**2 + orb_df['ephz']**2) < 3**2)
     ).to_numpy()
 
@@ -952,9 +952,9 @@ def filter_orbit_segment(orb_df):
         return empty
 
     # must be moving northward on average
-    dz = np.diff(orb_df['ephz'].to_numpy())[seg_start:seg_end + 1]
-    if not np.mean(dz) > 0:
-        return empty
+    #dz = np.diff(orb_df['ephz'].to_numpy())[seg_start:seg_end + 1]
+    #if not np.mean(dz) > 0:
+    #    return empty
 
     return orb_df.iloc[seg_start:seg_end + 1]
 
@@ -1078,17 +1078,19 @@ def _human_labels_for_orbit(orb, json_path=None):
                        pd.Timestamp(entry['dr_stop'])))
     return {'load_ivs': load_ivs, 'dr_ivs': dr_ivs}
 
-
 def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
-                            ephemeris_labels=False, ephemeris_coords='xyz',
-                            human_labels=None, bx_zero_line=False):
-    '''Load one orbit, run the v3 filter, and populate a two-panel subfigure.
+                            ephemeris_labels=False, ephemeris_coords='latlon',
+                            human_labels=None, bx_zero_line=False,
+                            species=None, show_loading_partition=False,
+                            partition_smooth_sec=30.0,
+                            second_panel='fac'):
+    '''Load one orbit, run the v3 filter, and populate a subfigure.
 
     Parameters
     ----------
     ephemeris_labels : bool
         If True, replace the x-axis time ticks with ephemeris values.
-    ephemeris_coords : {'xyz', 'latlon'}
+    ephemeris_coords : {'latlon', 'xyz'}
     bx_zero_line : bool
         If True, draw a vertical black dashed line on both panels at each
         time where the 60 s rolling average of observed Bx crosses zero.
@@ -1103,6 +1105,10 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
         Typically built by passing the relevant entry from human_dr_labels.json.
         The automated filter is still run to compute the model field and FAC
         components; only the shading is overridden.
+    species : list or None
+        If provided (e.g. ['H+', 'He++']), FIPS ESPEC spectrograms for those
+        species are appended as extra rows below the mag/FAC panels.  The FIPS
+        file is downloaded automatically if not already present in FIPS/.
     '''
 
     full_orb_df = load_bowers_data_pkl(orbit_number=orb)
@@ -1124,10 +1130,318 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
     Bx_obs = orb_df['magx'].to_numpy()
     By_obs = orb_df['magy'].to_numpy()
     Bz_obs = orb_df['magz'].to_numpy()
+    Bmag_obs = np.sqrt(Bx_obs**2+By_obs**2+Bz_obs**2)
 
     # ── v3 filter — always run to get model field + FAC components ──
     load_ivs_auto, dr_ivs_auto, dbg = _apply_dr_filter(orb_df)
     Bx_mod = dbg['Bxm'];  By_mod = dbg['Bym'];  Bz_mod = dbg['Bzm']
+    B_perp = dbg['B_perp'];  B_phi = dbg['B_phi'];  B_para = dbg['B_para']
+    Bmag_mod = np.sqrt(Bx_mod**2+By_mod**2+Bz_mod**2)
+
+    # choose which intervals to shade
+    if human_labels is not None:
+        load_ivs = human_labels.get('load_ivs', [])
+        dr_ivs   = human_labels.get('dr_ivs',   [])
+    else:
+        load_ivs = load_ivs_auto
+        dr_ivs   = dr_ivs_auto
+
+    # ── old filter (kept for reference) ──────────────────────────────────────
+    # orb_df = orb_df.copy()
+    # orb_df['Bx_mod'] = Bx_mod; orb_df['By_mod'] = By_mod; orb_df['Bz_mod'] = Bz_mod
+    # loading_times = find_substorm_loading(orb_df)
+    # DR_times      = find_DRs_following_substorm(orb_df, loading_times)
+    # pairs = []
+    # for ilt, loading_time in enumerate(loading_times):
+    #     next_loading_start = loading_times[ilt + 1][0] if ilt + 1 < len(loading_times) else None
+    #     for idr, DR_time in enumerate(DR_times):
+    #         if DR_time[0] > loading_time[1]:
+    #             if next_loading_start is None or DR_time[0] < next_loading_start:
+    #                 pairs.append((ilt, idr)); break
+    # paired_loading = {ilt for ilt, _ in pairs}
+    # paired_dr      = {idr for _, idr in pairs}
+    # ─────────────────────────────────────────────────────────────────────────
+
+    n_fips  = len(species) if species else 0
+    nrows   = 2 + n_fips
+    h_ratios = [2, 2] + [1] * n_fips
+    all_axes = subfig.subplots(nrows=nrows, sharex=True,
+                               gridspec_kw={'hspace': 0.05,
+                                            'height_ratios': h_ratios})
+    ax_mag, ax_fac = all_axes[0], all_axes[1]
+    ax_fips_list   = list(all_axes[2:]) if n_fips else []
+    date_str = t_obs.iloc[0].strftime('%Y-%m-%d')
+    subfig.suptitle(f'{label}: orbit {orb}  —  {date_str}', fontsize=fontsize)
+
+    ax_mag.plot(t_obs, Bmag_obs, color='black',   lw=0.7, label=r'$B$')
+    ax_mag.plot(t_obs, Bmag_mod, color='black',   lw=0.7, linestyle='dashed')
+    ax_mag.plot(t_obs, Bx_obs, color='red',   lw=0.7, label='Bx')
+    ax_mag.plot(t_obs, Bx_mod, color='red',   lw=0.7, linestyle='dashed')
+    ax_mag.plot(t_obs, By_obs, color='green',  lw=0.7, label='By')
+    ax_mag.plot(t_obs, By_mod, color='green',  lw=0.7, linestyle='dashed')
+    ax_mag.plot(t_obs, Bz_obs, color='blue',   lw=0.7, label='Bz')
+    ax_mag.plot(t_obs, Bz_mod, color='blue',   lw=0.7, linestyle='dashed')
+    ax_mag.legend(loc='lower right', fontsize=fontsize)
+    ax_mag.set_ylabel('B (nT)', fontsize=fontsize)
+    ax_mag.tick_params(axis='both', labelsize=fontsize)
+    ax_mag.grid()
+
+    if second_panel == 'delta_b':
+        ax_fac.plot(t_obs, Bx_obs - Bx_mod, color='red',   lw=0.7, label=r'$\Delta B_x$')
+        ax_fac.plot(t_obs, By_obs - By_mod, color='green',  lw=0.7, label=r'$\Delta B_y$')
+        ax_fac.plot(t_obs, Bz_obs - Bz_mod, color='blue',   lw=0.7, label=r'$\Delta B_z$')
+    else:  # 'fac'
+        ax_fac.plot(t_obs, B_perp, color='red',   lw=0.7, label=r'$\Delta B_\perp$')
+        ax_fac.plot(t_obs, B_phi,  color='green',  lw=0.7, label=r'$\Delta B_\phi$')
+        ax_fac.plot(t_obs, B_para, color='blue',   lw=0.7, label=r'$\Delta B_\parallel$')
+    ax_fac.axhline(y=0, color='black', lw=0.5)
+    ax_fac.legend(loc='lower right', fontsize=fontsize)
+    ax_fac.set_ylim(-75, 50)
+    ax_fac.set_ylabel(r'$\Delta$B (nT)', fontsize=fontsize)
+    ax_fac.tick_params(axis='both', labelsize=fontsize)
+    ax_fac.grid()
+    ax_bottom = ax_fips_list[-1] if ax_fips_list else ax_fac
+    if ephemeris_labels:
+        ax_bottom.set_xlabel('')
+        set_ephemeris_ticklabels(ax_bottom, orb_df, fontsize=fontsize,
+                                 coords=ephemeris_coords)
+    else:
+        ax_bottom.set_xlabel('Time', fontsize=fontsize)
+        plt.setp(ax_bottom.get_xticklabels(), rotation=30, ha='right')
+    # suppress x labels on intermediate panels when FIPS rows are present
+    if ax_fips_list:
+        ax_fac.set_xlabel('')
+        plt.setp(ax_fac.get_xticklabels(), visible=False)
+
+    for ax in [ax_mag, ax_fac]:
+        for lt in load_ivs:
+            ax.axvspan(lt[0], lt[1], color='green', alpha=0.35, zorder=0)
+        for iv in dr_ivs:
+            ax.axvspan(iv[0], iv[1], color='gold', alpha=0.35, zorder=0)
+
+
+    if show_loading_partition:
+        dBx_full = Bx_obs - Bx_mod
+        for lt in load_ivs:
+            t_peak = partition_loading_event(
+                lt[0], lt[1], t_obs, dBx_full,
+                smooth_sec=partition_smooth_sec,
+            )
+            if t_peak is not None:
+                for ax in [ax_mag, ax_fac]:
+                    ax.axvline(t_peak, color='darkgreen', lw=1.2,
+                               ls=':', alpha=0.9, zorder=6)
+
+    if bx_zero_line:
+        t_s      = (t_obs - t_obs.iloc[0]).dt.total_seconds().to_numpy()
+        dt_s     = np.median(np.diff(t_s)) if len(t_s) > 1 else 1.0
+        win      = max(1, int(round(60.0 / dt_s)))
+        bx_roll  = (pd.Series(Bx_obs)
+                    .rolling(win, center=True, min_periods=1).mean()
+                    .to_numpy())
+        signs    = np.sign(bx_roll)
+        signs[signs == 0] = 1
+        crossings = np.where(np.diff(signs) != 0)[0]
+        for ci in crossings:
+            denom = bx_roll[ci] - bx_roll[ci + 1]
+            frac  = bx_roll[ci] / denom if denom != 0 else 0.5
+            t_cross = t_obs.iloc[ci] + frac * (t_obs.iloc[ci + 1] - t_obs.iloc[ci])
+            for ax in [ax_mag, ax_fac]:
+                ax.axvline(t_cross, color='black', lw=1.0, ls='--', alpha=0.8, zorder=5)
+
+    # ── FIPS ESPEC panels ────────────────────────────────────────────────────
+    if ax_fips_list:
+        fips_cmap = plt.cm.nipy_spectral.copy()
+        try:
+            fips_path = _fips_espec_path_for_date(t_obs.iloc[0])
+            fips_data = load_fips_espec_tab(fips_path)
+            t_fips    = fips_data['t'].astype('datetime64[ns]')
+            t0_ns = np.datetime64(t_obs.iloc[0].to_datetime64(), 'ns')
+            t1_ns = np.datetime64(t_obs.iloc[-1].to_datetime64(), 'ns')
+            fmask = (t_fips >= t0_ns) & (t_fips <= t1_ns)
+            t_fips_win = t_fips[fmask]
+            for ax_f, sp in zip(ax_fips_list, species):
+                if fmask.sum() < 2:
+                    ax_f.text(0.5, 0.5, f'No FIPS data ({sp})',
+                              transform=ax_f.transAxes, ha='center', va='center',
+                              fontsize=fontsize)
+                    continue
+                flux    = fips_data[f'{sp}_flux'][fmask]
+                energy  = fips_data[f'{sp}_energy']
+                t_edges = _fips_time_edges(t_fips_win.astype('int64'))
+                e_edges = _fips_bin_edges(energy)
+                T, E    = np.meshgrid(t_edges, e_edges)
+                ax_f.pcolormesh(T, E, flux.T, cmap=fips_cmap,
+                                norm=plt.matplotlib.colors.LogNorm(vmin=1e6, vmax=1e9),
+                                shading='flat')
+                ax_f.set_yscale('log')
+                ax_f.set_ylim(e_edges[0], e_edges[-1])
+                ax_f.set_ylabel('keV', fontsize=fontsize)
+                ax_f.tick_params(axis='both', labelsize=fontsize)
+                ax_f.text(0.005, 0.96, sp, transform=ax_f.transAxes,
+                          fontsize=fontsize, va='top', fontweight='bold',
+                          color='white',
+                          bbox=dict(boxstyle='round,pad=0.2', fc='k', alpha=0.45))
+                ax_f.grid(True, alpha=0.15, color='white', lw=0.4)
+        except Exception as e:
+            ax_fips_list[0].text(0.5, 0.5, f'FIPS unavailable: {e}',
+                                 transform=ax_fips_list[0].transAxes,
+                                 ha='center', va='center', fontsize=fontsize)
+
+    ax_mag.set_xlim(t_obs.iloc[0], t_obs.iloc[-1])
+
+    # -- tiny YZ orbit inset (upper-left of ax_mag) --
+    ax_inset = ax_mag.inset_axes([0.01, 0.89, 0.25, 0.25])
+    # nightside (X<=0) behind planet, dayside (X>0) in front
+    # use masked arrays to preserve gaps — boolean indexing collapses arrays and
+    # causes matplotlib to connect non-contiguous segments with spurious lines
+    day   = X_full > 0
+    night = ~day
+    Y_night = np.ma.masked_where(day,   Y_full)
+    Z_night = np.ma.masked_where(day,   Z_full)
+    Y_day   = np.ma.masked_where(night, Y_full)
+    Z_day   = np.ma.masked_where(night, Z_full)
+    # viewed anti-sunward (-X direction): dayside (X>0) is the far side → behind planet
+    # use an opaque white circle to fully occlude the dayside line before the
+    # coloured (semi-transparent) patch is drawn — zorder alone is insufficient
+    # because a semi-transparent patch lets lines bleed through regardless
+    ax_inset.plot(Y_day,   Z_day,   color='steelblue', lw=0.6, zorder=0)
+    ax_inset.add_patch(plt.Circle((0, -0.2), 1.0, color='white',       zorder=1))
+    ax_inset.add_patch(plt.Circle((0, -0.2), 1.0, color='saddlebrown', alpha=0.35, zorder=2))
+    ax_inset.plot(Y_night, Z_night, color='steelblue', lw=0.6, zorder=3)
+    ax_inset.plot(Y, Z, color='gold', lw=1.0, zorder=4)
+    ax_inset.scatter(Y_full[0],  Z_full[0],  marker='o', s=8, color='lime',   zorder=5)
+    ax_inset.scatter(Y_full[-1], Z_full[-1], marker='s', s=8, color='tomato', zorder=5)
+    ax_inset.set_xlim(1.5, -1.5)
+    ax_inset.set_ylim(-2, 1)
+    ax_inset.set_aspect('equal')
+    ax_inset.tick_params(labelsize=4, length=2, pad=1)
+    ax_inset.set_xlabel('Y (R$_M$)', fontsize=4, labelpad=1)
+    ax_inset.set_ylabel('Z (R$_M$)', fontsize=4, labelpad=1)
+    ax_inset.grid(True, alpha=0.2, lw=0.3)
+
+    # pair each DR to its closest loading interval for the return value
+    results = []
+    for iv in dr_ivs:
+        if not load_ivs:
+            break
+        paired = min(load_ivs, key=lambda lt: abs((iv[0] - lt[1]).total_seconds()))
+        results.append([paired[0], paired[1], iv[0], iv[1]])
+    return results
+
+def _loading_labels_for_orbit(orb):
+    entry = _loading_labels_raw.get(str(orb), {})
+    return {
+        'load_ivs': [(pd.Timestamp(ev['start']), pd.Timestamp(ev['stop']))
+                     for ev in entry.get('loading_events', [])],
+        'dr_ivs': [],
+    }
+
+def partition_loading_event(t_start, t_stop, t_obs, dBx,
+                            smooth_sec=60.0):
+    """
+    Partition one loading event into a loading phase and an unloading phase by
+    locating the peak of smoothed |ΔBx| (= |Bx_obs − Bx_mod|) within the
+    event window.
+
+    Parameters
+    ----------
+    t_start, t_stop : pd.Timestamp
+        Start and end of the loading event.
+    t_obs : pd.Series or array-like of Timestamps (N,)
+        Full-orbit time axis (does NOT need to be pre-masked to the event).
+    dBx : array-like (N,)
+        Full-orbit ΔBx residual (Bx_obs − Bx_mod, nT), aligned with t_obs.
+    smooth_sec : float
+        Window (seconds) for the rolling-mean smoother applied to |ΔBx|.
+        Default 60 s.
+
+    Returns
+    -------
+    t_partition : pd.Timestamp or None
+        Timestamp of peak smoothed |ΔBx|.
+        Loading phase  : [t_start, t_partition]
+        Unloading phase: [t_partition, t_stop]
+        Returns None if the event contains fewer than 2 samples.
+    """
+    t_obs = pd.Series(pd.to_datetime(t_obs)) if not isinstance(t_obs, pd.Series) else pd.to_datetime(t_obs)
+    dBx   = np.asarray(dBx)
+
+    mask = (t_obs >= t_start) & (t_obs <= t_stop)
+    if mask.sum() < 2:
+        return None
+
+    t_ev   = t_obs[mask].reset_index(drop=True)
+    dbx_ev = np.abs(dBx[mask.to_numpy() if hasattr(mask, 'to_numpy') else mask])
+
+    # rolling smooth
+    t_s    = (t_ev - t_ev.iloc[0]).dt.total_seconds().to_numpy()
+    dt_med = float(np.median(np.diff(t_s))) if len(t_s) > 1 else 1.0
+    win    = max(3, int(round(smooth_sec / dt_med)))
+    smooth = (pd.Series(dbx_ev)
+              .rolling(win, center=True, min_periods=1)
+              .mean()
+              .to_numpy())
+
+    return t_ev.iloc[int(np.argmax(smooth))]
+
+
+def _plot_orbit_into_subfig_loading(subfig, orb, label, fontsize=8,
+                            ephemeris_labels=False, ephemeris_coords='latlon',
+                            human_labels=None, bx_zero_line=True,
+                            species=None):
+    '''Load one orbit, run the v3 filter, and populate a subfigure.
+
+    Parameters
+    ----------
+    ephemeris_labels : bool
+        If True, replace the x-axis time ticks with ephemeris values.
+    ephemeris_coords : {'latlon', 'xyz'}
+    bx_zero_line : bool
+        If True, draw a vertical black dashed line on both panels at each
+        time where the 60 s rolling average of observed Bx crosses zero.
+        Coordinate system for the ephemeris labels (passed to
+        set_ephemeris_ticklabels).  'xyz' shows X/Y/Z in R_M; 'latlon' shows
+        east longitude, latitude, and altitude (r - 1 R_M).
+    human_labels : dict or None
+        If provided, use these pre-parsed interval lists for the coloured fill
+        instead of running the automated filter.  Expected keys:
+            'load_ivs' — list of (t_start, t_stop) Timestamps for loading
+            'dr_ivs'   — list of (t_start, t_stop) Timestamps for DRs
+        Typically built by passing the relevant entry from human_dr_labels.json.
+        The automated filter is still run to compute the model field and FAC
+        components; only the shading is overridden.
+    species : list or None
+        If provided (e.g. ['H+', 'He++']), FIPS ESPEC spectrograms for those
+        species are appended as extra rows below the mag/FAC panels.  The FIPS
+        file is downloaded automatically if not already present in FIPS/.
+    '''
+
+    full_orb_df = load_bowers_data_pkl(orbit_number=orb)
+    orb_df      = filter_orbit_segment(full_orb_df)
+
+    if orb_df.empty:
+        subfig.suptitle(f'{label}: orbit {orb} (no data)', fontsize=fontsize)
+        return []
+
+    t_obs  = pd.to_datetime(orb_df['time'])
+    X      = orb_df['ephx'].to_numpy()
+    Y      = orb_df['ephy'].to_numpy()
+    Z      = orb_df['ephz'].to_numpy()
+
+    # full-orbit trajectory for the inset (before spatial filter)
+    X_full = full_orb_df['ephx'].to_numpy()
+    Y_full = full_orb_df['ephy'].to_numpy()
+    Z_full = full_orb_df['ephz'].to_numpy()
+    Bx_obs = orb_df['magx'].to_numpy()
+    By_obs = orb_df['magy'].to_numpy()
+    Bz_obs = orb_df['magz'].to_numpy()
+    Bmag_obs = np.sqrt(Bx_obs**2+By_obs**2+Bz_obs**2)
+
+    # ── v3 filter — always run to get model field + FAC components ──
+    load_ivs_auto, dr_ivs_auto, dbg = _apply_dr_filter(orb_df)
+    Bx_mod = dbg['Bxm'];  By_mod = dbg['Bym'];  Bz_mod = dbg['Bzm']
+    Bmag_mod = np.sqrt(Bx_mod**2+By_mod**2+Bz_mod**2)
     B_perp = dbg['B_perp'];  B_phi = dbg['B_phi'];  B_para = dbg['B_para']
 
     # choose which intervals to shade
@@ -1154,36 +1468,52 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
     # paired_dr      = {idr for _, idr in pairs}
     # ─────────────────────────────────────────────────────────────────────────
 
-    ax_mag, ax_fac = subfig.subplots(nrows=2, sharex=True, gridspec_kw={'hspace': 0.05})
-    subfig.suptitle(f'{label}: orbit {orb}', fontsize=fontsize)
+    n_fips  = len(species) if species else 0
+    nrows   = 2 + n_fips
+    h_ratios = [2, 2] + [1] * n_fips
+    all_axes = subfig.subplots(nrows=nrows, sharex=True,
+                               gridspec_kw={'hspace': 0.05,
+                                            'height_ratios': h_ratios})
+    ax_mag, ax_fac = all_axes[0], all_axes[1]
+    ax_fips_list   = list(all_axes[2:]) if n_fips else []
+    date_str = t_obs.iloc[0].strftime('%Y-%m-%d')
+    subfig.suptitle(f'{label}: orbit {orb}  —  {date_str}', fontsize=fontsize)
 
-    ax_mag.plot(t_obs, Bx_obs, color='red',   lw=0.7, label='Bx')
+    ax_mag.plot(t_obs, Bmag_obs, color='black',   lw=0.7, label=r'$B$')
+    ax_mag.plot(t_obs, Bmag_mod, color='black',   lw=0.7, linestyle='dashed')
+    ax_mag.plot(t_obs, Bx_obs, color='red',   lw=0.7, label=r'$B_x$')
     ax_mag.plot(t_obs, Bx_mod, color='red',   lw=0.7, linestyle='dashed')
-    ax_mag.plot(t_obs, By_obs, color='green',  lw=0.7, label='By')
+    ax_mag.plot(t_obs, By_obs, color='green',  lw=0.7, label=r'$B_y$')
     ax_mag.plot(t_obs, By_mod, color='green',  lw=0.7, linestyle='dashed')
-    ax_mag.plot(t_obs, Bz_obs, color='blue',   lw=0.7, label='Bz')
+    ax_mag.plot(t_obs, Bz_obs, color='blue',   lw=0.7, label=r'$B_z$')
     ax_mag.plot(t_obs, Bz_mod, color='blue',   lw=0.7, linestyle='dashed')
     ax_mag.legend(loc='lower right', fontsize=fontsize)
     ax_mag.set_ylabel('B (nT)', fontsize=fontsize)
     ax_mag.tick_params(axis='both', labelsize=fontsize)
     ax_mag.grid()
 
-    ax_fac.plot(t_obs, B_perp, color='red',   lw=0.7, label=r'$\Delta B_\perp$')
-    ax_fac.plot(t_obs, B_phi,  color='green',  lw=0.7, label=r'$\Delta B_\phi$')
-    ax_fac.plot(t_obs, B_para, color='blue',   lw=0.7, label=r'$\Delta B_\parallel$')
+    ax_fac.plot(t_obs, Bmag_obs-Bmag_mod, color='black',   lw=0.7, label=r'$\Delta B$')
+    ax_fac.plot(t_obs, Bx_obs-Bx_mod, color='red',   lw=0.7, label=r'$\Delta B_x$')
+    ax_fac.plot(t_obs, By_obs-By_mod,  color='green',  lw=0.7, label=r'$\Delta B_y$')
+    ax_fac.plot(t_obs, Bz_obs-Bz_mod, color='blue',   lw=0.7, label=r'$\Delta B_z$')
     ax_fac.axhline(y=0, color='black', lw=0.5)
     ax_fac.legend(loc='lower right', fontsize=fontsize)
-    ax_fac.set_ylim(-75, 50)
+    ax_fac.set_ylim(-75, 75)
     ax_fac.set_ylabel(r'$\Delta$B (nT)', fontsize=fontsize)
     ax_fac.tick_params(axis='both', labelsize=fontsize)
     ax_fac.grid()
+    ax_bottom = ax_fips_list[-1] if ax_fips_list else ax_fac
     if ephemeris_labels:
-        ax_fac.set_xlabel('')
-        set_ephemeris_ticklabels(ax_fac, orb_df, fontsize=fontsize,
+        ax_bottom.set_xlabel('')
+        set_ephemeris_ticklabels(ax_bottom, orb_df, fontsize=fontsize,
                                  coords=ephemeris_coords)
     else:
-        ax_fac.set_xlabel('Time', fontsize=fontsize)
-        plt.setp(ax_fac.get_xticklabels(), rotation=30, ha='right')
+        ax_bottom.set_xlabel('Time', fontsize=fontsize)
+        plt.setp(ax_bottom.get_xticklabels(), rotation=30, ha='right')
+    # suppress x labels on intermediate panels when FIPS rows are present
+    if ax_fips_list:
+        ax_fac.set_xlabel('')
+        plt.setp(ax_fac.get_xticklabels(), visible=False)
 
     for ax in [ax_mag, ax_fac]:
         for lt in load_ivs:
@@ -1207,6 +1537,45 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
             t_cross = t_obs.iloc[ci] + frac * (t_obs.iloc[ci + 1] - t_obs.iloc[ci])
             for ax in [ax_mag, ax_fac]:
                 ax.axvline(t_cross, color='black', lw=1.0, ls='--', alpha=0.8, zorder=5)
+
+    # ── FIPS ESPEC panels ────────────────────────────────────────────────────
+    if ax_fips_list:
+        fips_cmap = plt.cm.nipy_spectral.copy()
+        try:
+            fips_path = _fips_espec_path_for_date(t_obs.iloc[0])
+            fips_data = load_fips_espec_tab(fips_path)
+            t_fips    = fips_data['t'].astype('datetime64[ns]')
+            t0_ns = np.datetime64(t_obs.iloc[0].to_datetime64(), 'ns')
+            t1_ns = np.datetime64(t_obs.iloc[-1].to_datetime64(), 'ns')
+            fmask = (t_fips >= t0_ns) & (t_fips <= t1_ns)
+            t_fips_win = t_fips[fmask]
+            for ax_f, sp in zip(ax_fips_list, species):
+                if fmask.sum() < 2:
+                    ax_f.text(0.5, 0.5, f'No FIPS data ({sp})',
+                              transform=ax_f.transAxes, ha='center', va='center',
+                              fontsize=fontsize)
+                    continue
+                flux    = fips_data[f'{sp}_flux'][fmask]
+                energy  = fips_data[f'{sp}_energy']
+                t_edges = _fips_time_edges(t_fips_win.astype('int64'))
+                e_edges = _fips_bin_edges(energy)
+                T, E    = np.meshgrid(t_edges, e_edges)
+                ax_f.pcolormesh(T, E, flux.T, cmap=fips_cmap,
+                                norm=plt.matplotlib.colors.LogNorm(vmin=1e6, vmax=1e9),
+                                shading='flat')
+                ax_f.set_yscale('log')
+                ax_f.set_ylim(e_edges[0], e_edges[-1])
+                ax_f.set_ylabel('keV', fontsize=fontsize)
+                ax_f.tick_params(axis='both', labelsize=fontsize)
+                ax_f.text(0.005, 0.96, sp, transform=ax_f.transAxes,
+                          fontsize=fontsize, va='top', fontweight='bold',
+                          color='white',
+                          bbox=dict(boxstyle='round,pad=0.2', fc='k', alpha=0.45))
+                ax_f.grid(True, alpha=0.15, color='white', lw=0.4)
+        except Exception as e:
+            ax_fips_list[0].text(0.5, 0.5, f'FIPS unavailable: {e}',
+                                 transform=ax_fips_list[0].transAxes,
+                                 ha='center', va='center', fontsize=fontsize)
 
     ax_mag.set_xlim(t_obs.iloc[0], t_obs.iloc[-1])
 
@@ -1250,42 +1619,54 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
     return results
 
 def event_filtering_toolkit_v1(orbit_start=None, orbit_end=None, fontsize=8,
-                               human_labels=False, json_path=None):
+                               human_DR=False, human_loading=False,
+                               json_path=None):
     '''Interactive, development toolkit for refining our event selection criteria.
-    Shows set examples, and then summarizes all the orbits in sets of 8.
+    Shows set examples (DR mode only), then batch-plots orbits 8 per figure.
 
     Parameters
     ----------
     orbit_start, orbit_end : int, optional
-        Inclusive range of orbits to plot. Required unless human_labels=True.
-    human_labels : bool
-        If True, plot only the orbits marked as DR=true in the human labels JSON,
-        ignoring orbit_start/orbit_end.
+        Inclusive range of orbits to plot.  Required unless human_DR or
+        human_loading is True.
+    human_DR : bool
+        If True, plot only orbits marked dr=True in human_dr_labels.json,
+        overlaying the saved loading/DR intervals.
+    human_loading : bool
+        If True, plot only reviewed orbits from human_loading_labels.json,
+        using _plot_orbit_into_subfig_loading with species=['H+'] and
+        overlaying saved loading events.
     json_path : str, optional
-        Path to the human labels JSON. Defaults to <script_dir>/human_dr_labels.json.
+        Path to the labels JSON.  Defaults to human_dr_labels.json (human_DR)
+        or human_loading_labels.json (human_loading).
     '''
 
-    # --- Example figures (fixed case studies) ---
-    example_positives = [3451, 3455, 3963, 3965]
-    #example_positives = [2159, 2163, 2687, 2689, 2902, 2937, 2941, 2957, 3189,
-    example_negatives = [3433, 3443, 3690, 3921]
+    if human_DR and human_loading:
+        raise ValueError("Set at most one of human_DR and human_loading.")
 
-    ncols = np.max([len(example_negatives), len(example_positives)])
-    fig = plt.figure(figsize=(14, 8))
-    fig.suptitle("DR filter test", fontsize=fontsize + 2)
-    subfigs = fig.subfigures(nrows=2, ncols=ncols, hspace=0.05, wspace=0.05).reshape(2, ncols)
-
-    for irow, (label, orb_list) in enumerate([('DR', example_positives), ('Non-DR', example_negatives)]):
-        for iorb, orb in enumerate(orb_list):
-            _plot_orbit_into_subfig(subfigs[irow, iorb], orb, label, fontsize=fontsize)
-
-    plt.show()
-    plt.close()
+    # --- Example figures (DR mode only) ---
+    if not human_loading:
+        example_positives = [3451, 3455, 3963, 3965]
+        example_negatives = [3433, 3443, 3690, 3921]
+        ncols = max(len(example_negatives), len(example_positives))
+        fig = plt.figure(figsize=(14, 8))
+        fig.suptitle("DR filter test", fontsize=fontsize + 2)
+        subfigs_ex = fig.subfigures(nrows=2, ncols=ncols,
+                                    hspace=0.05, wspace=0.05).reshape(2, ncols)
+        for irow, (lbl, orb_list) in enumerate([('DR', example_positives),
+                                                 ('Non-DR', example_negatives)]):
+            for iorb, orb in enumerate(orb_list):
+                _plot_orbit_into_subfig(subfigs_ex[irow, iorb], orb, lbl,
+                                        fontsize=fontsize)
+        plt.show()
+        plt.close()
 
     # --- Build orbit list ---
-    if human_labels:
+    raw = {}
+    if human_DR:
         if json_path is None:
-            json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'human_dr_labels.json')
+            json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'human_dr_labels.json')
         with open(json_path) as f:
             raw = json.load(f)
         orbits = sorted(
@@ -1293,41 +1674,51 @@ def event_filtering_toolkit_v1(orbit_start=None, orbit_end=None, fontsize=8,
             if (v if isinstance(v, bool) else v.get('dr', False))
         )
         print(f"Plotting {len(orbits)} human-labelled DR orbits from {json_path}")
+
+    elif human_loading:
+        if json_path is None:
+            json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'human_loading_labels.json')
+        with open(json_path) as f:
+            raw = json.load(f)
+        orbits = sorted(
+            int(k) for k, v in raw.items()
+            if isinstance(v, dict) and v.get('reviewed', False)
+        )
+        print(f"Plotting {len(orbits)} reviewed loading orbits from {json_path}")
+
     else:
         if orbit_start is None or orbit_end is None:
-            raise ValueError("Provide orbit_start and orbit_end, or set human_labels=True.")
+            raise ValueError(
+                "Provide orbit_start and orbit_end, or set human_DR=True / human_loading=True.")
         orbits = list(range(orbit_start, orbit_end + 1))
 
-    # --- Batch figures: loop through orbit list, 8 per figure ---
-    fig_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')
-    os.makedirs(fig_dir, exist_ok=True)
-    chunk_size = 8
-    ncols_batch, nrows_batch = 4, 2
-
-    # pre-parse human times for quick lookup
-    # supports new interval format (loading_start/stop, dr_start/stop)
-    # and old point format (loading_time, dr_time) for backward compatibility
-    # value: (load_start, load_stop, dr_start, dr_stop)  — stop=start for old format
-    human_times = {}
-    if human_labels and raw:
+    # --- Pre-parse DR human times for overlay (human_DR mode only) ---
+    human_dr_times = {}
+    if human_DR and raw:
         for k, v in raw.items():
             entry = v if isinstance(v, dict) else {'dr': v}
             if not entry.get('dr'):
                 continue
             if 'loading_start' in entry and 'dr_start' in entry:
-                human_times[int(k)] = (
+                human_dr_times[int(k)] = (
                     pd.Timestamp(entry['loading_start']),
                     pd.Timestamp(entry['loading_stop']),
                     pd.Timestamp(entry['dr_start']),
                     pd.Timestamp(entry['dr_stop']),
                 )
             elif 'loading_time' in entry and 'dr_time' in entry:
-                # old single-point format — use same time for start and stop
                 lt = pd.Timestamp(entry['loading_time'])
                 dt = pd.Timestamp(entry['dr_time'])
-                human_times[int(k)] = (lt, lt, dt, dt)
+                human_dr_times[int(k)] = (lt, lt, dt, dt)
 
-    events = {}  # {orbit: [[loading_start, loading_stop, DR_start, DR_stop], ...]}
+    # --- Batch figures: 8 orbits per page ---
+    fig_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'figures')
+    os.makedirs(fig_dir, exist_ok=True)
+    chunk_size = 8
+    ncols_batch, nrows_batch = 4, 2
+
+    events = {}
 
     for chunk_start in range(0, len(orbits), chunk_size):
         chunk = orbits[chunk_start:chunk_start + chunk_size]
@@ -1340,24 +1731,37 @@ def event_filtering_toolkit_v1(orbit_start=None, orbit_end=None, fontsize=8,
         for idx, orb in enumerate(chunk):
             irow, icol = divmod(idx, ncols_batch)
             sf = subfigs[irow, icol]
-            orb_pairs = _plot_orbit_into_subfig(sf, orb, f'Orbit {orb}', fontsize=fontsize)
-            if orb_pairs:
-                events[orb] = orb_pairs
-            # overlay human-labeled intervals (or single-point fallback)
-            if orb in human_times:
-                ls, le, ds, de = human_times[orb]
-                for ax in sf.get_axes():
-                    if ax.get_subplotspec() is None:
-                        continue   # skip inset
-                    ax.axvline(ls, color='darkgreen',  lw=1.0, ls='-',  zorder=5)
-                    ax.axvline(le, color='darkgreen',  lw=1.0, ls='--', zorder=5)
-                    ax.axvline(ds, color='darkorange', lw=1.0, ls='-',  zorder=5)
-                    ax.axvline(de, color='darkorange', lw=1.0, ls='--', zorder=5)
-                    if ls != le:   # shade interval if we have start≠stop
-                        ax.axvspan(ls, le, color='darkgreen',  alpha=0.10, zorder=4)
-                        ax.axvspan(ds, de, color='darkorange', alpha=0.10, zorder=4)
 
-        # Hide unused panels if chunk < 8
+            if human_loading:
+                entry = raw.get(str(orb), {})
+                human_lbl = {
+                    'load_ivs': [(pd.Timestamp(ev['start']),
+                                  pd.Timestamp(ev['stop']))
+                                 for ev in entry.get('loading_events', [])],
+                    'dr_ivs': [],
+                }
+                _plot_orbit_into_subfig_loading(
+                    sf, orb, f'Orbit {orb}', fontsize=fontsize,
+                    human_labels=human_lbl, species=['H+'],
+                )
+            else:
+                orb_pairs = _plot_orbit_into_subfig(sf, orb, f'Orbit {orb}',
+                                                    fontsize=fontsize)
+                if orb_pairs:
+                    events[orb] = orb_pairs
+                if orb in human_dr_times:
+                    ls, le, ds, de = human_dr_times[orb]
+                    for ax in sf.get_axes():
+                        if ax.get_subplotspec() is None:
+                            continue
+                        ax.axvline(ls, color='darkgreen',  lw=1.0, ls='-',  zorder=5)
+                        ax.axvline(le, color='darkgreen',  lw=1.0, ls='--', zorder=5)
+                        ax.axvline(ds, color='darkorange', lw=1.0, ls='-',  zorder=5)
+                        ax.axvline(de, color='darkorange', lw=1.0, ls='--', zorder=5)
+                        if ls != le:
+                            ax.axvspan(ls, le, color='darkgreen',  alpha=0.10, zorder=4)
+                            ax.axvspan(ds, de, color='darkorange', alpha=0.10, zorder=4)
+
         for idx in range(len(chunk), chunk_size):
             irow, icol = divmod(idx, ncols_batch)
             subfigs[irow, icol].set_visible(False)
@@ -1841,6 +2245,480 @@ def event_filtering_toolkit_v2(orbit_start, orbit_end, fontsize=8, json_path=Non
     dr_count = sum(1 for v in labels.values() if v.get('dr', False))
     print(f"\nDone. {dr_count} DR orbits across {len(labels)} reviewed.  Labels → {json_path}")
     return labels
+
+def event_filtering_toolkit_loading(orbit_start, orbit_end, fontsize=8,
+                                    json_path=None, species=None,
+                                    auto_review_page=True):
+    """Human-in-the-loop loading-event labelling toolkit.
+
+    Page view  : 8 subfigures per page using _plot_orbit_into_subfig_loading.
+                 Green shade = ≥1 event saved.  Salmon = reviewed, 0 events.
+    Expanded   : full-size overlay plot.  Clicks come in pairs:
+                 1st click → loading START  (solid green line)
+                 2nd click → loading STOP   (dashed green line + green span)
+                 Repeat for as many events as needed, then press Save.
+    Buttons    : Save  |  Undo  |  No loading  |  Back
+    Confirm    : saves page and advances.  If auto_review_page=True, any orbit
+                 on the page that was not explicitly labelled is automatically
+                 marked reviewed with no loading events.   Quit: stops early.
+
+    JSON format  (human_loading_labels.json):
+        {
+          "1109": {
+            "reviewed": true,
+            "loading_events": [
+              {"start": "2012-08-16T14:27:31", "stop": "2012-08-16T14:35:00"},
+              ...
+            ]
+          }
+        }
+    An entry with "loading_events": [] means the orbit was reviewed and found
+    to have no loading events.
+
+    Parameters
+    ----------
+    orbit_start, orbit_end : int  inclusive range
+    fontsize               : int
+    json_path              : str  default: <script_dir>/human_loading_labels.json
+    species                : list or None  FIPS species to show in expanded view
+    """
+    from matplotlib.widgets import Button
+
+    if json_path is None:
+        json_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'human_loading_labels.json'
+        )
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+
+    labels = {}
+    if os.path.exists(json_path):
+        with open(json_path) as f:
+            labels = json.load(f)
+
+    orbits     = list(range(orbit_start, orbit_end + 1))
+    chunk_size = 3
+    ncols_b, nrows_b = 3, 1
+    n_pages    = -(-len(orbits) // chunk_size)
+
+    print(f"\nReviewing orbits {orbit_start}–{orbit_end}  "
+          f"({len(orbits)} total, {n_pages} pages)")
+    print("Click a subfigure to expand → click pairs (start/stop) per loading "
+          "event → Save.\n")
+
+    for chunk_start in range(0, len(orbits), chunk_size):
+        chunk = orbits[chunk_start:chunk_start + chunk_size]
+        page  = chunk_start // chunk_size + 1
+
+        fig = plt.figure(figsize=(16, 8))
+        _page_title = (
+            f"Orbits {chunk[0]}–{chunk[-1]}  |  page {page}/{n_pages}"
+            "  —  click a subfigure to expand & label loading events"
+        )
+        fig.suptitle(_page_title, fontsize=fontsize + 2)
+
+        subfigs = fig.subfigures(
+            nrows=nrows_b, ncols=ncols_b, hspace=0.05, wspace=0.05
+        ).reshape(nrows_b, ncols_b)
+        for row in subfigs:
+            for sf in row:
+                sf.patch.set_visible(False)
+
+        ax_to_idx     = {}
+        idx_to_subfig = {}
+        valid_indices = set()
+
+        for idx, orb in enumerate(chunk):
+            irow, icol = divmod(idx, ncols_b)
+            sf    = subfigs[irow, icol]
+            entry = labels.get(str(orb), {})
+            # pass existing loading events so they are shaded in the thumbnail
+            human = {
+                'load_ivs': [(pd.Timestamp(ev['start']), pd.Timestamp(ev['stop']))
+                             for ev in entry.get('loading_events', [])],
+                'dr_ivs': [],
+            }
+            result = _plot_orbit_into_subfig_loading(
+                sf, orb, f'[{idx}] Orbit {orb}', fontsize=fontsize,
+                human_labels=human, species=species,
+            )
+            if result is not None:
+                valid_indices.add(idx)
+                idx_to_subfig[idx] = sf
+                for ax in sf.get_axes():
+                    ax_to_idx[ax] = idx
+
+        for idx in range(len(chunk), chunk_size):
+            irow, icol = divmod(idx, ncols_b)
+            subfigs[irow, icol].set_visible(False)
+
+        has_events = set()
+        no_events  = set()
+        quit_flag  = [False]
+
+        def _set_shade(idx, color):
+            sf = idx_to_subfig[idx]
+            sf.patch.set_facecolor(color)
+            sf.patch.set_alpha(0.3)
+            sf.patch.set_visible(True)
+
+        for idx, orb in enumerate(chunk):
+            entry = labels.get(str(orb), {})
+            if not entry.get('reviewed', False) or idx not in valid_indices:
+                continue
+            if entry.get('loading_events'):
+                has_events.add(idx); _set_shade(idx, 'limegreen')
+            else:
+                no_events.add(idx);  _set_shade(idx, 'salmon')
+
+        # ── expansion state ──────────────────────────────────────────────
+        exp = {
+            'active':        False,
+            'idx':           None,
+            'events':        [],        # completed {'start': ts, 'stop': ts}
+            'pending_start': None,      # Timestamp of in-progress pair
+            'overlay_axes':  [],
+            'spans':         [],
+            'vlines':        [],
+            'btn_axes':      [],
+            'btns':          [],        # Button objects kept alive against GC
+        }
+
+        def _redraw(axes_list):
+            for a in exp['spans']:
+                try: a.remove()
+                except Exception: pass
+            for a in exp['vlines']:
+                try: a.remove()
+                except Exception: pass
+            exp['spans'].clear(); exp['vlines'].clear()
+            for ev in exp['events']:
+                for ax in axes_list:
+                    exp['spans'].append(
+                        ax.axvspan(ev['start'], ev['stop'],
+                                   color='darkgreen', alpha=0.20, zorder=6))
+                    exp['vlines'] += [
+                        ax.axvline(ev['start'], color='darkgreen',
+                                   lw=1.5, ls='-',  zorder=7),
+                        ax.axvline(ev['stop'],  color='darkgreen',
+                                   lw=1.5, ls='--', zorder=7),
+                    ]
+            if exp['pending_start'] is not None:
+                for ax in axes_list:
+                    exp['vlines'].append(
+                        ax.axvline(exp['pending_start'], color='lime',
+                                   lw=1.5, ls='-', zorder=7))
+
+        def _update_title():
+            orb_cur = chunk[exp['idx']]
+            n_done  = len(exp['events'])
+            if exp['pending_start'] is None:
+                fig.suptitle(
+                    f'Orbit {orb_cur}  —  {n_done} event(s) marked.  '
+                    f'Click START of event {n_done + 1}  (or Save / No loading)',
+                    fontsize=fontsize + 2, color='darkgreen')
+            else:
+                fig.suptitle(
+                    f'Orbit {orb_cur}  —  Click STOP of event {n_done + 1}',
+                    fontsize=fontsize + 2, color='green')
+
+        def _collapse():
+            for a in exp['spans'] + exp['vlines']:
+                try: a.remove()
+                except Exception: pass
+            exp['spans'].clear(); exp['vlines'].clear()
+            for ax in exp['overlay_axes']:
+                ax.remove()
+            exp['overlay_axes'].clear()
+            for ax in exp['btn_axes']:
+                ax.remove()
+            exp['btn_axes'].clear()
+            for idx2 in valid_indices:
+                idx_to_subfig[idx2].set_visible(True)
+            for idx2 in has_events:
+                _set_shade(idx2, 'limegreen')
+            for idx2 in no_events:
+                _set_shade(idx2, 'salmon')
+            for idx2 in range(len(chunk), chunk_size):
+                r2, c2 = divmod(idx2, ncols_b)
+                subfigs[r2, c2].set_visible(False)
+            exp.update(active=False, idx=None, events=[],
+                       pending_start=None, btns=[])
+            fig.suptitle(_page_title, fontsize=fontsize + 2, color='black')
+            fig.canvas.draw_idle()
+
+        def _expand(idx):
+            orb = chunk[idx]
+            for idx2 in valid_indices:
+                idx_to_subfig[idx2].set_visible(False)
+            fig.suptitle(f'Orbit {orb}  —  loading data…',
+                         fontsize=fontsize + 2, color='gray')
+            fig.canvas.draw()
+
+            orb_df = load_bowers_data_pkl(orbit_number=orb)
+            orb_df = filter_orbit_segment(orb_df)
+            if orb_df.empty:
+                _collapse(); return
+
+            t_e  = pd.to_datetime(orb_df['time'])
+            Xe   = orb_df['ephx'].to_numpy()
+            Ye   = orb_df['ephy'].to_numpy()
+            Ze   = orb_df['ephz'].to_numpy()
+            Bx_e = orb_df['magx'].to_numpy()
+            By_e = orb_df['magy'].to_numpy()
+            Bz_e = orb_df['magz'].to_numpy()
+            _, Bxm, Bym, Bzm = get_kt17_along_track(df=orb_df)
+            Bmod = np.sqrt(Bxm**2 + Bym**2 + Bzm**2)
+            Bmag = np.sqrt(Bx_e**2 + By_e**2 + Bz_e**2)
+
+            # ── axes layout (same height ratios as _plot_orbit_into_subfig_loading)
+            n_fips      = len(species) if species else 0
+            total_units = 4 + n_fips
+            content_bot, content_top = 0.09, 0.95
+            unit_h = (content_top - content_bot) / total_units
+
+            ax_top = fig.add_axes([0.07,
+                                   content_bot + (n_fips + 2) * unit_h,
+                                   0.88, 2 * unit_h - 0.01])
+            ax_bot = fig.add_axes([0.07,
+                                   content_bot + n_fips * unit_h,
+                                   0.88, 2 * unit_h - 0.01])
+            overlay = [ax_top, ax_bot]
+
+            ax_top.plot(t_e, Bmag,   color='black', lw=0.8, label=r'$|B|$')
+            ax_top.plot(t_e, Bmod,   color='black', lw=0.8, ls='--')
+            ax_top.plot(t_e, Bx_e,  color='red',   lw=0.8, label=r'$B_x$')
+            ax_top.plot(t_e, Bxm,   color='red',   lw=0.8, ls='--')
+            ax_top.plot(t_e, By_e,  color='green', lw=0.8, label=r'$B_y$')
+            ax_top.plot(t_e, Bym,   color='green', lw=0.8, ls='--')
+            ax_top.plot(t_e, Bz_e,  color='blue',  lw=0.8, label=r'$B_z$')
+            ax_top.plot(t_e, Bzm,   color='blue',  lw=0.8, ls='--')
+            ax_top.legend(fontsize=fontsize, loc='lower right')
+            ax_top.set_ylabel('B (nT)', fontsize=fontsize)
+            ax_top.tick_params(labelbottom=False)
+            ax_top.grid(); ax_top.set_xlim(t_e.iloc[0], t_e.iloc[-1])
+
+            ax_bot.plot(t_e, Bmag - Bmod,  color='black', lw=0.8,
+                        label=r'$\Delta|B|$')
+            ax_bot.plot(t_e, Bx_e - Bxm,  color='red',   lw=0.8,
+                        label=r'$\Delta B_x$')
+            ax_bot.plot(t_e, By_e - Bym,  color='green', lw=0.8,
+                        label=r'$\Delta B_y$')
+            ax_bot.plot(t_e, Bz_e - Bzm,  color='blue',  lw=0.8,
+                        label=r'$\Delta B_z$')
+            ax_bot.axhline(0, color='k', lw=0.5)
+            ax_bot.legend(fontsize=fontsize, loc='lower right')
+            ax_bot.set_ylim(-75, 50)
+            ax_bot.set_ylabel(r'$\Delta$B (nT)', fontsize=fontsize)
+            ax_bot.tick_params(labelbottom=(n_fips == 0))
+            if n_fips == 0:
+                date_str = t_e.iloc[0].strftime('%Y-%m-%d')
+                ax_bot.set_xlabel(f'UTC  {date_str}', fontsize=fontsize)
+                plt.setp(ax_bot.get_xticklabels(), rotation=30, ha='right')
+            ax_bot.grid(); ax_bot.set_xlim(t_e.iloc[0], t_e.iloc[-1])
+
+            # FIPS rows
+            if n_fips:
+                try:
+                    fips_path = _fips_espec_path_for_date(t_e.iloc[0])
+                    fips_data = load_fips_espec_tab(fips_path)
+                    t_fips = fips_data['t'].astype('datetime64[ns]')
+                    t0_ns  = np.datetime64(t_e.iloc[0].to_datetime64(), 'ns')
+                    t1_ns  = np.datetime64(t_e.iloc[-1].to_datetime64(), 'ns')
+                    fmask  = (t_fips >= t0_ns) & (t_fips <= t1_ns)
+                    t_fw   = t_fips[fmask]
+                    fips_cmap = plt.cm.nipy_spectral.copy()
+                    for fi, sp in enumerate(species):
+                        ax_f = fig.add_axes(
+                            [0.07,
+                             content_bot + (n_fips - 1 - fi) * unit_h,
+                             0.88, unit_h - 0.005])
+                        overlay.append(ax_f)
+                        if fmask.sum() >= 2:
+                            flux    = fips_data[f'{sp}_flux'][fmask]
+                            energy  = fips_data[f'{sp}_energy']
+                            t_edges = _fips_time_edges(t_fw.astype('int64'))
+                            e_edges = _fips_bin_edges(energy)
+                            T, E = np.meshgrid(t_edges, e_edges)
+                            ax_f.pcolormesh(
+                                T, E, flux.T, cmap=fips_cmap,
+                                norm=plt.matplotlib.colors.LogNorm(
+                                    vmin=1e6, vmax=1e9),
+                                shading='flat')
+                        ax_f.set_yscale('log')
+                        ax_f.set_ylabel('keV', fontsize=fontsize)
+                        ax_f.tick_params(axis='both', labelsize=fontsize)
+                        ax_f.text(0.005, 0.96, sp,
+                                  transform=ax_f.transAxes,
+                                  fontsize=fontsize, va='top',
+                                  fontweight='bold', color='white',
+                                  bbox=dict(boxstyle='round,pad=0.2',
+                                            fc='k', alpha=0.45))
+                        ax_f.set_xlim(t_e.iloc[0], t_e.iloc[-1])
+                        if fi == n_fips - 1:
+                            date_str = t_e.iloc[0].strftime('%Y-%m-%d')
+                            ax_f.set_xlabel(f'UTC  {date_str}',
+                                            fontsize=fontsize)
+                            plt.setp(ax_f.get_xticklabels(),
+                                     rotation=30, ha='right')
+                        else:
+                            ax_f.tick_params(labelbottom=False)
+                except Exception as exc:
+                    print(f'  FIPS unavailable: {exc}')
+
+            exp['overlay_axes'] = overlay
+
+            # pre-fill saved events
+            entry = labels.get(str(orb), {})
+            exp['events'] = [
+                {'start': pd.Timestamp(ev['start']),
+                 'stop':  pd.Timestamp(ev['stop'])}
+                for ev in entry.get('loading_events', [])
+            ]
+            exp['pending_start'] = None
+            _redraw(overlay)
+
+            # ── buttons ─────────────────────────────────────────────────
+            ax_save = fig.add_axes([0.35, 0.005, 0.10, 0.04])
+            ax_undo = fig.add_axes([0.46, 0.005, 0.07, 0.04])
+            ax_none = fig.add_axes([0.54, 0.005, 0.11, 0.04])
+            ax_back = fig.add_axes([0.66, 0.005, 0.07, 0.04])
+            exp['btn_axes'] = [ax_save, ax_undo, ax_none, ax_back]
+
+            btn_save = Button(ax_save, 'Save  ✓',
+                              color='#d4f0d4', hovercolor='#90e090')
+            btn_undo = Button(ax_undo, 'Undo',
+                              color='#fffacd', hovercolor='#f0e060')
+            btn_none = Button(ax_none, 'No loading',
+                              color='#f0d4d4', hovercolor='#e08080')
+            btn_back = Button(ax_back, 'Back',
+                              color='#e8e8e8', hovercolor='#c0c0c0')
+            # keep Button objects alive — local vars are GC'd when _expand returns
+            exp['btns'] = [btn_save, btn_undo, btn_none, btn_back]
+
+            def _save(_ev):
+                idx_done = exp['idx']
+                orb_done = chunk[idx_done]
+                evs = exp['events']
+                labels[str(orb_done)] = {
+                    'reviewed': True,
+                    'loading_events': [
+                        {'start': ev['start'].isoformat(),
+                         'stop':  ev['stop'].isoformat()}
+                        for ev in evs
+                    ],
+                }
+                if evs:
+                    has_events.add(idx_done); no_events.discard(idx_done)
+                else:
+                    no_events.add(idx_done);  has_events.discard(idx_done)
+                _collapse()
+                color = 'limegreen' if labels[str(orb_done)]['loading_events'] \
+                        else 'salmon'
+                _set_shade(idx_done, color)
+                fig.canvas.draw_idle()
+
+            def _undo(_ev):
+                if exp['pending_start'] is not None:
+                    exp['pending_start'] = None
+                elif exp['events']:
+                    exp['events'].pop()
+                _redraw(exp['overlay_axes'])
+                _update_title()
+                fig.canvas.draw_idle()
+
+            def _no_loading(_ev):
+                idx_done = exp['idx']
+                orb_done = chunk[idx_done]
+                labels[str(orb_done)] = {'reviewed': True, 'loading_events': []}
+                no_events.add(idx_done); has_events.discard(idx_done)
+                _collapse()
+                _set_shade(idx_done, 'salmon')
+                fig.canvas.draw_idle()
+
+            btn_save.on_clicked(_save)
+            btn_undo.on_clicked(_undo)
+            btn_none.on_clicked(_no_loading)
+            btn_back.on_clicked(lambda _ev: _collapse())
+
+            exp['active'] = True
+            exp['idx']    = idx
+            _update_title()
+            fig.canvas.draw_idle()
+
+        def on_click(event):
+            if event.inaxes is None:
+                return
+            if not exp['active']:
+                idx = ax_to_idx.get(event.inaxes)
+                if idx is None or idx not in valid_indices:
+                    return
+                _expand(idx)
+            else:
+                # only respond to the two main data axes
+                if event.inaxes not in exp['overlay_axes'][:2] \
+                        or event.xdata is None:
+                    return
+                t_clicked = pd.Timestamp(
+                    mdates.num2date(event.xdata).replace(tzinfo=None))
+                if exp['pending_start'] is None:
+                    exp['pending_start'] = t_clicked
+                else:
+                    t0, t1 = exp['pending_start'], t_clicked
+                    if t1 < t0:
+                        t0, t1 = t1, t0
+                    exp['events'].append({'start': t0, 'stop': t1})
+                    exp['pending_start'] = None
+                _redraw(exp['overlay_axes'])
+                _update_title()
+                fig.canvas.draw_idle()
+
+        def on_confirm(_ev):
+            if auto_review_page:
+                unlabelled = valid_indices - has_events - no_events
+                for idx2 in unlabelled:
+                    orb2 = chunk[idx2]
+                    labels[str(orb2)] = {'reviewed': True, 'loading_events': []}
+                    no_events.add(idx2)
+                if unlabelled:
+                    for idx2 in unlabelled:
+                        _set_shade(idx2, 'salmon')
+                    fig.canvas.draw_idle()
+            plt.close(fig)
+
+        def on_quit(_ev):
+            quit_flag[0] = True
+            plt.close(fig)
+
+        cid = fig.canvas.mpl_connect('button_press_event', on_click)
+
+        ax_confirm  = fig.add_axes([0.14, 0.005, 0.13, 0.04])
+        ax_quit_btn = fig.add_axes([0.28, 0.005, 0.06, 0.04])
+        btn_confirm = Button(ax_confirm,  'Confirm  ✓',
+                             color='#d4f0d4', hovercolor='#90e090')
+        btn_quit    = Button(ax_quit_btn, 'Quit',
+                             color='#f0d4d4', hovercolor='#e09090')
+        btn_confirm.on_clicked(on_confirm)
+        btn_quit.on_clicked(on_quit)
+
+        plt.show(block=True)
+        fig.canvas.mpl_disconnect(cid)
+
+        with open(json_path, 'w') as f:
+            json.dump(labels, f, indent=2, sort_keys=True)
+
+        print(f"  Page {page}: orbits with events = "
+              f"{[chunk[i] for i in sorted(has_events)]}")
+
+        if quit_flag[0]:
+            break
+
+    n_with = sum(1 for v in labels.values()
+                 if v.get('reviewed') and v.get('loading_events'))
+    print(f"\nDone. {n_with} orbits with loading events across "
+          f"{len(labels)} reviewed.  Labels → {json_path}")
+    return labels
+
 
 _FILTER_DEFAULTS = dict(
     DERIV_SMOOTH_S     = 120.0,
@@ -2607,27 +3485,43 @@ def run_automated_detection(orb_start, orb_end, params=None, out_path=None,
     print(f"Labels saved → {out_path}")
     return labels
 
-def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
+def plot_event_locations(json_path=None, fig=None, orbit_labels=False,
+                         human_DR=True, human_loading=False):
     """
-    Read human_dr_labels.json (or *json_path*) and plot the MSM trajectory
-    segments of every loading interval (green) and every DR (yellow) in two
-    panels:
+    Plot the MSM trajectory segments of labelled events in two panels:
 
         Left  — X–Y plane  (MSM, R_M)
         Right — latitude vs. east-longitude  (degrees, derived from MSM X/Y/Z)
 
     Parameters
     ----------
+    json_path : str, optional
+        Path to labels JSON.  Defaults to human_dr_labels.json (human_DR) or
+        human_loading_labels.json (human_loading).
+    human_DR : bool
+        Read human_dr_labels.json — plots loading intervals (green) and DR
+        intervals (yellow).
+    human_loading : bool
+        Read human_loading_labels.json — plots each loading event (green).
+        No DR segments.
     orbit_labels : bool
-        If True, annotate each DR segment on the lat-lon panel with its orbit
-        number, placed at the midpoint of the segment.
+        Annotate each segment midpoint with its orbit number.
 
     Returns the matplotlib Figure.
     """
     import os
 
-    if json_path is None:
-        json_path = os.path.join(os.path.dirname(__file__), 'human_dr_labels.json')
+    if human_DR and human_loading:
+        raise ValueError("Set at most one of human_DR and human_loading.")
+
+    if human_loading:
+        if json_path is None:
+            json_path = os.path.join(os.path.dirname(__file__),
+                                     'human_loading_labels.json')
+    else:
+        if json_path is None:
+            json_path = os.path.join(os.path.dirname(__file__),
+                                     'human_dr_labels.json')
 
     with open(json_path) as f:
         labels = json.load(f)
@@ -2640,8 +3534,17 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
     dr_segs      = []
 
     for orb_str, entry in labels.items():
-        if not isinstance(entry, dict) or not entry.get('dr'):
+        if not isinstance(entry, dict):
             continue
+
+        if human_loading:
+            # only reviewed orbits with ≥1 loading event
+            if not entry.get('reviewed') or not entry.get('loading_events'):
+                continue
+        else:
+            # DR mode: only orbits marked dr=True
+            if not entry.get('dr'):
+                continue
 
         orb = int(orb_str)
         try:
@@ -2662,33 +3565,41 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
             t1   = pd.Timestamp(t_stop_str)
             mask = (t_obs >= t0) & (t_obs <= t1)
             if mask.sum() < 2:
-                # fall back to nearest single point duplicated so a dot appears
-                idx  = np.argmin(np.abs((t_obs - (t0 + (t1 - t0)/2)).dt.total_seconds().to_numpy()))
+                idx = np.argmin(
+                    np.abs((t_obs - (t0 + (t1 - t0) / 2)).dt.total_seconds().to_numpy()))
                 return (np.array([X_orb[idx], X_orb[idx]]),
                         np.array([Y_orb[idx], Y_orb[idx]]),
                         np.array([Z_orb[idx], Z_orb[idx]]))
             return X_orb[mask], Y_orb[mask], Z_orb[mask]
 
-        # loading interval
-        if 'loading_start' in entry and 'loading_stop' in entry:
-            try:
-                loading_segs.append((orb, *_seg(entry['loading_start'], entry['loading_stop'])))
-            except Exception:
-                pass
+        if human_loading:
+            # each entry has a list of {start, stop} loading events
+            for ev in entry.get('loading_events', []):
+                try:
+                    loading_segs.append((orb, *_seg(ev['start'], ev['stop'])))
+                except Exception:
+                    pass
+        else:
+            # DR mode: loading interval + DR interval(s)
+            if 'loading_start' in entry and 'loading_stop' in entry:
+                try:
+                    loading_segs.append(
+                        (orb, *_seg(entry['loading_start'], entry['loading_stop'])))
+                except Exception:
+                    pass
 
-        # DR interval(s) — support both single-event and multi-event formats
-        if 'events' in entry:
-            for ev in entry['events']:
-                if 'dr_start' in ev and 'dr_stop' in ev:
-                    try:
-                        dr_segs.append((orb, *_seg(ev['dr_start'], ev['dr_stop'])))
-                    except Exception:
-                        pass
-        elif 'dr_start' in entry and 'dr_stop' in entry:
-            try:
-                dr_segs.append((orb, *_seg(entry['dr_start'], entry['dr_stop'])))
-            except Exception:
-                pass
+            if 'events' in entry:
+                for ev in entry['events']:
+                    if 'dr_start' in ev and 'dr_stop' in ev:
+                        try:
+                            dr_segs.append((orb, *_seg(ev['dr_start'], ev['dr_stop'])))
+                        except Exception:
+                            pass
+            elif 'dr_start' in entry and 'dr_stop' in entry:
+                try:
+                    dr_segs.append((orb, *_seg(entry['dr_start'], entry['dr_stop'])))
+                except Exception:
+                    pass
 
     def _seg_to_latlon(X, Y, Z):
         r   = np.sqrt(X**2 + Y**2 + Z**2)
@@ -2711,37 +3622,89 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
     ax_xy.fill(np.cos(theta), np.sin(theta), color='saddlebrown', alpha=0.4, zorder=1)
     ax_xy.plot(np.cos(theta), np.sin(theta), color='saddlebrown', lw=1.0, zorder=1)
 
-    load_label_done = dr_label_done = False
+    from matplotlib.collections import LineCollection
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    # R_MSM: distance from the magnetic dipole centre, offset (0, 0, -0.2) R_M
+    def _r_msm(X, Y, Z):
+        return np.sqrt(X**2 + Y**2 + (Z + 0.2)**2)
+
+    # colour scale for R_MSM (loading mode only)
+    if human_loading and loading_segs:
+        all_r = np.concatenate([_r_msm(X, Y, Z) for _, X, Y, Z in loading_segs])
+        r_min, r_max = np.nanmin(all_r), np.nanmax(all_r)
+    else:
+        r_min, r_max = 1.0, 3.0
+    r_cmap = cm.plasma
+    r_norm = mcolors.Normalize(vmin=r_min, vmax=r_max)
+
+    def _add_lc(ax, coords_a, coords_b, vals, lw=2.0, zorder=3):
+        pts  = np.column_stack([coords_a, coords_b])
+        segs = np.stack([pts[:-1], pts[1:]], axis=1)
+        mid_vals = 0.5 * (vals[:-1] + vals[1:])
+        lc = LineCollection(segs, cmap=r_cmap, norm=r_norm,
+                            lw=lw, alpha=0.9, zorder=zorder)
+        lc.set_array(mid_vals)
+        ax.add_collection(lc)
+        return lc
+
+    dr_label_done = False
+    last_lc_xy = last_lc_ll = None
+
     for orb, X, Y, Z in loading_segs:
-        ax_xy.plot(Y, X, color='limegreen', lw=2.0, alpha=0.8, zorder=3,
-                   label='Loading' if not load_label_done else '_')
-        load_label_done = True
+        if human_loading:
+            r = _r_msm(X, Y, Z)
+            if len(X) >= 2:
+                last_lc_xy = _add_lc(ax_xy, Y, X, r, lw=2.0, zorder=3)
+            else:
+                ax_xy.scatter(Y, X, c=r, cmap=r_cmap, norm=r_norm, s=20, zorder=3)
+        else:
+            ax_xy.plot(Y, X, color='limegreen', lw=2.0, alpha=0.8, zorder=3,
+                       label='Loading')
+
     for orb, X, Y, Z in dr_segs:
         ax_xy.plot(Y, X, color='gold', lw=2.5, alpha=0.9, zorder=4,
                    label='DR' if not dr_label_done else '_',
                    solid_capstyle='round')
         dr_label_done = True
 
+    if human_loading and last_lc_xy is not None:
+        cb_xy = fig.colorbar(last_lc_xy, ax=ax_xy, fraction=0.04, pad=0.03)
+        cb_xy.set_label(r'$R_{MSM}$ (R$_M$)', fontsize=8)
+
     ax_xy.set_xlabel('Y$_{MSM}$ (R$_M$)')
     ax_xy.set_ylabel('X$_{MSM}$ (R$_M$)')
     ax_xy.set_aspect('equal')
     ax_xy.axhline(0, color='k', lw=0.4, alpha=0.4)
     ax_xy.axvline(0, color='k', lw=0.4, alpha=0.4)
-    ax_xy.legend(fontsize=9)
+    if not human_loading:
+        ax_xy.legend(fontsize=9)
     ax_xy.grid(True, alpha=0.25)
     ax_xy.set_title('X–Y plane (MSM)')
+
+    ax_xy.set_ylim(-3,0.5)
+    ax_xy.set_xlim(1.75,-1.75)
 
     # ---------- Lat–Lon panel ----------
     ax_ll.set_facecolor('#e8f4f8')
     ax_ll.axhline(0,   color='k', lw=0.5, alpha=0.4)
     ax_ll.axvline(180, color='k', lw=0.5, alpha=0.3, ls='--')
 
-    load_label_done = dr_label_done = False
+    dr_label_done = False
+
     for orb, X, Y, Z in loading_segs:
         lon, lat = _seg_to_latlon(X, Y, Z)
-        ax_ll.plot(lon, lat, color='limegreen', lw=2.0, alpha=0.8, zorder=3,
-                   label='Loading' if not load_label_done else '_')
-        load_label_done = True
+        if human_loading:
+            r = _r_msm(X, Y, Z)
+            if len(lon) >= 2:
+                last_lc_ll = _add_lc(ax_ll, lon, lat, r, lw=2.0, zorder=3)
+            else:
+                ax_ll.scatter(lon, lat, c=r, cmap=r_cmap, norm=r_norm, s=20, zorder=3)
+        else:
+            ax_ll.plot(lon, lat, color='limegreen', lw=2.0, alpha=0.8, zorder=3,
+                       label='Loading')
+
     for orb, X, Y, Z in dr_segs:
         lon, lat = _seg_to_latlon(X, Y, Z)
         ax_ll.plot(lon, lat, color='gold', lw=2.5, alpha=0.9, zorder=4,
@@ -2755,13 +3718,30 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
                        color='darkorange', zorder=5,
                        clip_on=True)
 
+    if human_loading and last_lc_ll is not None:
+        cb_ll = fig.colorbar(last_lc_ll, ax=ax_ll, fraction=0.04, pad=0.03)
+        cb_ll.set_label(r'$R_{MSM}$ (R$_M$)', fontsize=8)
+
+    if orbit_labels and human_loading:
+        for orb, X, Y, Z in loading_segs:
+            lon, lat = _seg_to_latlon(X, Y, Z)
+            mid = len(lon) // 2
+            ax_ll.text(lon[mid], lat[mid], str(orb),
+                       fontsize=5, ha='center', va='bottom',
+                       color='black', zorder=5, clip_on=True)
+            ax_xy.text(Y[mid], X[mid], str(orb),
+                       fontsize=5, ha='center', va='bottom',
+                       color='black', zorder=5, clip_on=True)
+
+    if not human_loading:
+        ax_ll.legend(fontsize=9)
+
     lon_min, lon_max = 90, 270
-    lat_min, lat_max = -60, 60
+    lat_min, lat_max = -90, 90
     ax_ll.set_xlabel('East longitude (°)')
     ax_ll.set_ylabel('MLat (°)')
     ax_ll.set_xticks([t for t in range(0, 361, 45) if lon_min <= t <= lon_max])
     ax_ll.set_yticks([t for t in range(-90, 91, 30) if lat_min <= t <= lat_max])
-    ax_ll.legend(fontsize=9)
     ax_ll.grid(True, alpha=0.25)
     ax_ll.set_title('Latitude–Longitude (MSM)')
     # set limits last so nothing above can re-trigger autoscaling
@@ -2770,11 +3750,17 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
 
     n_load = len(loading_segs)
     n_dr_  = len(dr_segs)
-    fig.suptitle(
-        f'MESSENGER DR event locations  '
-        f'({n_dr_} DRs,  {n_load} loading intervals)',
-        fontsize=11,
-    )
+    if human_loading:
+        fig.suptitle(
+            f'MESSENGER loading event locations  ({n_load} events)',
+            fontsize=11,
+        )
+    else:
+        fig.suptitle(
+            f'MESSENGER DR event locations  '
+            f'({n_dr_} DRs,  {n_load} loading intervals)',
+            fontsize=11,
+        )
     plt.tight_layout()
 
     out_dir = os.path.join(os.path.dirname(os.path.abspath(json_path)), 'figures')
@@ -2785,13 +3771,30 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False):
 
     return fig
 
-def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
+def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
+                        human_DR=False, human_loading=True,
+                        partition_differencing=False,
+                        partition_smooth_sec=30.0):
     """
-    Read human_dr_labels.json (or *json_path*) and plot each DR trajectory
-    segment on a lat–lon map, coloured by ΔB_phi (azimuthal FAC component).
+    Plot trajectory segments on a lat–lon map, coloured by ΔB_phi (azimuthal
+    FAC component).
 
-    The colour axis is symmetric about zero (default ±20 nT) using the
-    RdBu_r colormap so negative (blue) and positive (red) are intuitive.
+    human_DR=True  : reads human_dr_labels.json, segments are DR intervals.
+    human_loading=True : reads human_loading_labels.json, segments are loading
+                         intervals.
+
+    The colour axis is symmetric about zero using RdBu_r (blue=negative,
+    red=positive).
+
+    partition_differencing : bool
+        Only valid with human_loading=True.  For each loading event the
+        partition time (peak smoothed |ΔBx|) is computed.  The pre-partition
+        (loading) phase is plotted as zero / white.  The post-partition
+        (unloading) phase is plotted as ΔBphi = Bphi − Bphi_0, where Bphi_0
+        is the mean Bphi during the loading phase.  A coloured tick mark is
+        drawn at the partition point on the map.
+    partition_smooth_sec : float
+        Smoothing window passed to partition_loading_event (seconds).
 
     Returns the matplotlib Figure.
     """
@@ -2799,8 +3802,17 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
     import matplotlib.cm as cm
     import matplotlib.colors as mcolors
 
-    if json_path is None:
-        json_path = os.path.join(os.path.dirname(__file__), 'human_dr_labels.json')
+    if human_DR and human_loading:
+        raise ValueError("Set at most one of human_DR and human_loading.")
+
+    if human_loading:
+        if json_path is None:
+            json_path = os.path.join(os.path.dirname(__file__),
+                                     'human_loading_labels.json')
+    else:
+        if json_path is None:
+            json_path = os.path.join(os.path.dirname(__file__),
+                                     'human_dr_labels.json')
 
     with open(json_path) as f:
         labels = json.load(f)
@@ -2809,19 +3821,22 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
     norm  = mcolors.Normalize(vmin=clim[0], vmax=clim[1])
 
     fig, ax = plt.subplots(figsize=(9, 6))
-    ax.set_facecolor('#e8f4f8')
+    ax.set_facecolor('white')
     ax.axhline(0,   color='k', lw=0.5, alpha=0.4)
     ax.axvline(180, color='k', lw=0.5, alpha=0.3, ls='--')
 
     for orb_str, entry in labels.items():
-        if not isinstance(entry, dict) or not entry.get('dr'):
+        if not isinstance(entry, dict):
             continue
+
+        if human_loading:
+            if not entry.get('reviewed') or not entry.get('loading_events'):
+                continue
+        else:
+            if not entry.get('dr'):
+                continue
 
         orb = int(orb_str)
-
-        if orb not in nice_examples:
-            print("HARDCODED EXAMPLE MODE, NOT PLOTTING THIS ORBIT")
-            continue
 
         try:
             orb_df = load_bowers_data_pkl(orbit_number=orb)
@@ -2837,6 +3852,7 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
         Y_orb  = orb_df['ephy'].to_numpy()
         Z_orb  = orb_df['ephz'].to_numpy()
         B_phi  = dbg['B_phi']
+        dBx_full = orb_df['magx'].to_numpy() - dbg['Bxm']
 
         # 60 s rolling mean of observed Bx over the full orbit
         t_s      = (t_obs - t_obs.iloc[0]).dt.total_seconds().to_numpy()
@@ -2846,33 +3862,63 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
                      .rolling(win, center=True, min_periods=1).mean()
                      .to_numpy())
 
-        # DR intervals — support single and multi-event formats
-        dr_intervals = []
-        if 'events' in entry:
-            for ev in entry['events']:
-                if 'dr_start' in ev and 'dr_stop' in ev:
-                    dr_intervals.append((pd.Timestamp(ev['dr_start']),
-                                         pd.Timestamp(ev['dr_stop'])))
-        elif 'dr_start' in entry and 'dr_stop' in entry:
-            dr_intervals.append((pd.Timestamp(entry['dr_start']),
-                                 pd.Timestamp(entry['dr_stop'])))
+        # Build list of (t0, t1) intervals to plot
+        if human_loading:
+            intervals = [(pd.Timestamp(ev['start']), pd.Timestamp(ev['stop']))
+                         for ev in entry.get('loading_events', [])]
+        else:
+            intervals = []
+            if 'events' in entry:
+                for ev in entry['events']:
+                    if 'dr_start' in ev and 'dr_stop' in ev:
+                        intervals.append((pd.Timestamp(ev['dr_start']),
+                                          pd.Timestamp(ev['dr_stop'])))
+            elif 'dr_start' in entry and 'dr_stop' in entry:
+                intervals.append((pd.Timestamp(entry['dr_start']),
+                                  pd.Timestamp(entry['dr_stop'])))
 
-        for t0, t1 in dr_intervals:
+        for t0, t1 in intervals:
             mask = (t_obs >= t0) & (t_obs <= t1)
             if mask.sum() < 2:
                 continue
 
             Xs = X_orb[mask]; Ys = Y_orb[mask]; Zs = Z_orb[mask]
             bp = B_phi[mask]
+            t_obs_seg = t_obs[mask].to_numpy()   # numpy datetime64 array
 
             r   = np.sqrt(Xs**2 + Ys**2 + Zs**2)
             lat = np.degrees(np.arcsin(np.clip(Zs / r, -1, 1)))
             lon = np.degrees(np.arctan2(Ys, Xs)) % 360
 
+            # ── partition differencing ────────────────────────────────────────
+            part_lon = part_lat = part_idx = None
+            if partition_differencing and human_loading:
+                t_part = partition_loading_event(
+                    t0, t1, t_obs, dBx_full,
+                    smooth_sec=partition_smooth_sec,
+                )
+                if t_part is not None:
+                    t_part_ns  = pd.Timestamp(t_part).value   # int64 ns since epoch
+                    t_obs_ns   = t_obs_seg.astype('datetime64[ns]').astype('int64')
+                    load_seg   = t_obs_ns <= t_part_ns
+                    unload_seg = ~load_seg
+
+                    Bphi_0  = float(bp[load_seg].mean()) if load_seg.any() else 0.0
+                    bp_plot = bp.copy().astype(float)
+                    bp_plot[load_seg]   = 0.0
+                    bp_plot[unload_seg] = bp[unload_seg] - Bphi_0
+
+                    part_idx = int(np.argmin(np.abs(t_obs_ns - t_part_ns)))
+                    part_lon, part_lat = lon[part_idx], lat[part_idx]
+                else:
+                    bp_plot = bp.astype(float)
+            else:
+                bp_plot = bp.astype(float)
+
             # build line segments for LineCollection
             pts  = np.column_stack([lon, lat])
             segs = np.stack([pts[:-1], pts[1:]], axis=1)
-            vals = 0.5 * (bp[:-1] + bp[1:])   # colour by midpoint value
+            vals = 0.5 * (bp_plot[:-1] + bp_plot[1:])
 
             lc = LineCollection(segs, cmap=cmap, norm=norm, lw=3.0,
                                  alpha=0.9, zorder=3)
@@ -2885,17 +3931,29 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
                         fontsize=5, ha='center', va='bottom',
                         color='k', zorder=5, clip_on=True)
 
+            # partition tick mark (perpendicular to track, dark green)
+            if part_lon is not None:
+                i0 = max(part_idx - 1, 0)
+                i1 = min(part_idx + 1, len(lon) - 1)
+                dlon = lon[i1] - lon[i0]; dlat = lat[i1] - lat[i0]
+                mag  = np.sqrt(dlon**2 + dlat**2)
+                pdlon, pdlat = (-dlat / mag, dlon / mag) if mag > 0 else (0.0, 1.0)
+                tick = 0.5
+                ax.plot([part_lon - pdlon * tick, part_lon + pdlon * tick],
+                        [part_lat - pdlat * tick, part_lat + pdlat * tick],
+                        color='black', lw=0.5, zorder=7,
+                        solid_capstyle='round')
+
             # perpendicular tick at each 60 s-smoothed Bx=0 crossing
             bx_seg = Bx_smooth[mask]
             signs  = np.sign(bx_seg)
-            signs[signs == 0] = 1          # treat exact zero as positive
+            signs[signs == 0] = 1
             crossings = np.where(np.diff(signs) != 0)[0]
             for ci in crossings:
                 denom = bx_seg[ci] - bx_seg[ci + 1]
                 frac  = bx_seg[ci] / denom if denom != 0 else 0.5
                 cx_lon = lon[ci] + frac * (lon[ci + 1] - lon[ci])
                 cx_lat = lat[ci] + frac * (lat[ci + 1] - lat[ci])
-                # local trajectory direction → perpendicular (rotate 90°)
                 i0 = max(ci - 1, 0);  i1 = min(ci + 2, len(lon) - 1)
                 dlon = lon[i1] - lon[i0]
                 dlat = lat[i1] - lat[i0]
@@ -2904,25 +3962,48 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
                     pdlon, pdlat = -dlat / mag, dlon / mag
                 else:
                     pdlon, pdlat = 0.0, 1.0
-                tick = 1.5   # half-length in degrees
+                tick = 1.5
                 ax.plot([cx_lon - pdlon * tick, cx_lon + pdlon * tick],
                         [cx_lat - pdlat * tick, cx_lat + pdlat * tick],
                         color='black', lw=0.5, zorder=6,
                         solid_capstyle='round')
 
+            # filled arrowhead just past the segment end, offset by one arrow
+            # width along the direction of motion so it doesn't overlap the track
+            if len(lon) >= 2:
+                dlon_dir = lon[-1] - lon[-2]
+                dlat_dir = lat[-1] - lat[-2]
+                mag_dir  = np.sqrt(dlon_dir**2 + dlat_dir**2)
+                if mag_dir > 0:
+                    ulon, ulat = dlon_dir / mag_dir, dlat_dir / mag_dir
+                else:
+                    ulon, ulat = 0.0, 1.0
+                offset = 1.2   # degrees along track
+                ax.annotate('',
+                            xy=(lon[-1] + ulon * offset, lat[-1] + ulat * offset),
+                            xytext=(lon[-1], lat[-1]),
+                            arrowprops=dict(arrowstyle='-|>', color='black',
+                                            fc='black', lw=0.8, mutation_scale=7),
+                            zorder=8)
+
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    cb = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02)
-    cb.set_label(r'$\Delta B_\phi$ (nT)', fontsize=10)
+    cb = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink = 0.5)
+    _phi_label = r'$\Delta B_\phi$' if partition_differencing else r'$B_\phi$'
+    cb.set_label(f'{_phi_label} (nT)', fontsize=10)
 
     lon_min, lon_max = 90, 270
-    lat_min, lat_max = -30, 30
+    lat_min, lat_max = -65, 65
     ax.set_xlabel('East longitude (°)')
     ax.set_ylabel('MLat (°)')
+    ax.set_aspect(1)
     ax.set_xticks([t for t in range(0, 361, 45) if lon_min <= t <= lon_max])
     ax.set_yticks([t for t in range(-90, 91, 30) if lat_min <= t <= lat_max])
     ax.grid(True, alpha=0.25)
-    ax.set_title(r'DR locations coloured by $\Delta B_\phi$  (MSM lat–lon)')
+    if human_loading:
+        ax.set_title(f'Loading event locations coloured by {_phi_label}  (MSM lat–lon)')
+    else:
+        ax.set_title(f'DR locations coloured by {_phi_label}  (MSM lat–lon)')
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
 
@@ -2932,7 +4013,8 @@ def plot_dr_bphi_locations(json_path=None, clim=(-10, 10), orbit_labels=False):
 
     out_dir = os.path.join(os.path.dirname(os.path.abspath(json_path)), 'figures')
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, 'dr_bphi_locations.png')
+    tag = 'loading' if human_loading else 'dr'
+    out_path = os.path.join(out_dir, f'{tag}_bphi_locations.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f"Saved → {out_path}")
 
@@ -2982,23 +4064,34 @@ def load_fips_espec_tab(path):
     # cols: 0=INDEX, 1=MET, then 5 groups of 64
     met = raw.iloc[:, 1].to_numpy(dtype='float64')
 
-    # MET → UTC via SPICE; linear fallback if kernels unavailable
+    # MET → UTC via SPICE if available; otherwise use per-file UTC anchor sidecar.
+    # The sidecar (<tab_path>.utc) contains the UTC of the first observation,
+    # written by _fips_espec_path_for_date / download_all_fips_espec from the
+    # metadex start_date_time field.  This anchors met[0] to a known UTC so
+    # conversion is accurate for any mission date without requiring SPICE.
     try:
         load_messenger_kernels()
         et_arr  = np.array([spice.sct2e(-236, m) for m in met])
         utc_arr = np.array([spice.et2utc(e, 'ISOC', 3) for e in et_arr],
                            dtype='datetime64[ns]')
     except Exception:
-        # label anchor: MET 253562681 = 2012-08-16T00:00:14.973Z
-        _met0 = 253562681.0
-        _t0   = np.datetime64('2012-08-16T00:00:14.973', 'ms').astype('int64')
-        delta = ((met - _met0) * 1e9).astype('int64')
+        anchor_path = path + '.utc'
+        if os.path.exists(anchor_path):
+            with open(anchor_path) as _f:
+                _utc_str = _f.read().strip()
+            _t0 = np.datetime64(_utc_str, 'ns').astype('int64')
+        else:
+            # last-resort hardcoded anchor — only accurate for 2012-08-16 files
+            _t0 = np.datetime64('2012-08-16T00:00:14.973000000', 'ns').astype('int64')
+        _met0   = met[0]
+        delta   = ((met - _met0) * 1e9).astype('int64')
         utc_arr = (_t0 + delta).astype('datetime64[ns]')
 
     result = {'t': utc_arr}
     for i, sp in enumerate(_FIPS_TAB_SPECIES):
         col0 = 2 + i * 64
-        flux = raw.iloc[:, col0:col0 + 64].to_numpy(dtype='float32')
+        # TAB stores channels high→low energy; reverse to match _FIPS_ENERGY_KEV (low→high)
+        flux = raw.iloc[:, col0:col0 + 64].to_numpy(dtype='float32')[:, ::-1]
         flux[flux <= 0] = np.nan
         result[f'{sp}_flux']   = flux
         result[f'{sp}_energy'] = _FIPS_ENERGY_KEV.copy()
@@ -3014,7 +4107,6 @@ def _fips_time_edges(t_ns):
     edges[-1] = t_ns[-1] + dt // 2
     return edges.astype('datetime64[ns]')
 
-
 def _fips_bin_edges(centres):
     """(N+1,) log-spaced bin edges from (N,) bin centres."""
     log_c = np.log10(centres)
@@ -3025,8 +4117,7 @@ def _fips_bin_edges(centres):
     edges[-1]   = 10 ** (log_c[-1] + 0.5 * dlog[-1])
     return edges
 
-
-def plot_fips_espec_spectrogram(path, species=None, save=True):
+def plot_fips_espec_spectrogram(path, species=None, trange=None, orbit=None, save=True):
     """
     Plot FIPS differential flux spectrograms from a PDS ESPEC TAB file.
 
@@ -3034,6 +4125,10 @@ def plot_fips_espec_spectrogram(path, species=None, save=True):
     ----------
     path    : str   path to a FIPS_ESPEC_*_DDR_*.TAB file
     species : list  subset of _FIPS_TAB_SPECIES to plot; default ['H+']
+    trange  : list of two strings/Timestamps, e.g. ['2012-08-16T02:00', '2012-08-16T04:00']
+              If given, restricts the plot to that time window.
+    orbit   : int   orbit number; if given, uses that orbit's time window from the
+              mag data (overrides trange).
     save    : bool
 
     Returns the matplotlib Figure.
@@ -3041,13 +4136,33 @@ def plot_fips_espec_spectrogram(path, species=None, save=True):
     if species is None:
         species = ['H+']
 
-    data    = load_fips_espec_tab(path)
-    t_ns    = data['t'].astype('int64')
+    # Resolve time window from orbit number if requested
+    if orbit is not None:
+        orb_df   = load_bowers_data_pkl(orbit_number=orbit)
+        orb_df   = filter_orbit_segment(orb_df)
+        t_obs    = pd.to_datetime(orb_df['time'])
+        trange   = [t_obs.iloc[0], t_obs.iloc[-1]]
+
+    data  = load_fips_espec_tab(path)
+    t_dt  = data['t'].astype('datetime64[ns]')   # keep as datetime64 for masking
+
+    # Apply time mask
+    if trange is not None:
+        t0 = np.datetime64(pd.Timestamp(trange[0]), 'ns')
+        t1 = np.datetime64(pd.Timestamp(trange[1]), 'ns')
+        mask = (t_dt >= t0) & (t_dt <= t1)
+        if mask.sum() < 2:
+            raise ValueError(f"trange {trange} contains fewer than 2 FIPS samples.")
+        t_dt = t_dt[mask]
+        data = {k: (v[mask] if isinstance(v, np.ndarray) and v.ndim == 2
+                    else v)
+                for k, v in data.items()}
+        data['t'] = t_dt
+
+    t_ns    = t_dt.astype('int64')
     t_edges = _fips_time_edges(t_ns)
 
     cmap = plt.cm.nipy_spectral.copy()
-    #cmap.set_bad('black')
-    #cmap.set_under('black')
 
     fig, axes = plt.subplots(len(species), 1,
                              figsize=(14, 3 * len(species)),
@@ -3062,9 +4177,8 @@ def plot_fips_espec_spectrogram(path, species=None, save=True):
         e_edges = _fips_bin_edges(energy)
 
         T, E = np.meshgrid(t_edges, e_edges)
-        pos  = flux[flux > 0]
-        vmin = 1e6 #np.nanpercentile(pos,  5) if pos.size else 1.0
-        vmax = 1e9 #np.nanpercentile(pos, 99) if pos.size else 1e6
+        vmin = 1e6
+        vmax = 1e9
 
         pcm = ax.pcolormesh(T, E, flux.T,
                             cmap=cmap,
@@ -3082,133 +4196,167 @@ def plot_fips_espec_spectrogram(path, species=None, save=True):
 
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
     axes[-1].xaxis.set_major_locator(mdates.AutoDateLocator())
-    axes[-1].set_xlabel('UTC 2012-08-16', fontsize=9)
+
+    # x-axis label: show date range
+    t0_str = str(t_dt[0])[:10]
+    t1_str = str(t_dt[-1])[:10]
+    xlabel = f'UTC {t0_str}' if t0_str == t1_str else f'UTC {t0_str} – {t1_str}'
+    axes[-1].set_xlabel(xlabel, fontsize=9)
 
     date_tag = os.path.basename(path).split('_')[2]
-    fig.suptitle(f'MESSENGER FIPS ESPEC — {date_tag}', fontsize=11)
+    title    = f'MESSENGER FIPS ESPEC — {date_tag}'
+    if orbit is not None:
+        title += f'  (orbit {orbit})'
+    fig.suptitle(title, fontsize=11)
     plt.tight_layout()
 
     if save:
         os.makedirs('figures', exist_ok=True)
-        sp_tag = '_'.join(s.replace('+', 'p').replace('-', '') for s in species)
-        out = os.path.join('figures', f'fips_espec_{date_tag}_{sp_tag}.png')
+        sp_tag   = '_'.join(s.replace('+', 'p').replace('-', '') for s in species)
+        orb_tag  = f'_orb{orbit}' if orbit is not None else ''
+        out = os.path.join('figures', f'fips_espec_{date_tag}{orb_tag}_{sp_tag}.png')
         fig.savefig(out, dpi=150, bbox_inches='tight')
         print(f"Saved → {out}")
 
     return fig
 
+_FIPS_ESPEC_DIR     = os.path.join(os.path.dirname(__file__), 'FIPS')
+_FIPS_METADEX_BASE  = 'https://pds-ppi.igpp.ucla.edu/metadex/product/select/'
+_FIPS_DATA_BASE     = 'https://pds-ppi.igpp.ucla.edu'
+_FIPS_COLLECTION_ID = 'urn:nasa:pds:mess-epps-fips-derived:data-espec'
 
-_FIPS_ESPEC_DIR = os.path.join(os.path.dirname(__file__), 'FIPS')
-_FIPS_ESPEC_BASE = 'https://pds-ppi.igpp.ucla.edu/data/mess-epps-fips-derived/data-espec/'
 
+def _fips_metadex_query(q, rows=10, fl=None):
+    """Query the PPI metadex Solr API and return the docs list."""
+    import urllib.request, urllib.parse, json as _json
+    params = {'q': q, 'version': '2.2', 'start': '0',
+              'rows': str(rows), 'indent': 'on', 'wt': 'json'}
+    if fl:
+        params['fl'] = fl
+    url = _FIPS_METADEX_BASE + '?' + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = _json.loads(resp.read())
+    return data['response']['docs']
+
+def _fips_tab_info_for_tag(yyyydoy):
+    """Query metadex for a day's TAB file.
+
+    Returns (tab_url, utc_start_str) or (None, None) on failure.
+    utc_start_str is the ISO UTC start time of the observation (e.g.
+    '2012-08-16T00:00:14.973Z'), used as a per-file MET anchor so that
+    MET→UTC conversion works without SPICE for any mission date.
+    """
+    import datetime as _dt
+    year = int(yyyydoy[:4])
+    doy  = int(yyyydoy[4:])
+    date = _dt.date(year, 1, 1) + _dt.timedelta(days=doy - 1)
+    t0   = date.strftime('%Y-%m-%dT00:00:00Z')
+    t1   = date.strftime('%Y-%m-%dT23:59:59Z')
+    q    = (f'collection_id:"{_FIPS_COLLECTION_ID}"'
+            f' AND start_date_time:[{t0} TO {t1}]')
+    try:
+        docs = _fips_metadex_query(q, rows=5,
+                                   fl='slot,data_file,start_date_time')
+        if docs and docs[0].get('slot') and docs[0].get('data_file'):
+            d       = docs[0]
+            tab_url = _FIPS_DATA_BASE + d['slot'] + '/' + d['data_file']
+            utc_str = d.get('start_date_time', '')
+            return tab_url, utc_str
+    except Exception:
+        pass
+    return None, None
+
+def _fips_save_anchor(tab_local, utc_start_str):
+    """Save a tiny sidecar file <tab>.utc with the UTC of the first record.
+
+    This lets load_fips_espec_tab do accurate MET→UTC conversion without
+    SPICE by anchoring met[0] to a known UTC, correct for ANY mission date.
+    """
+    anchor_path = tab_local + '.utc'
+    with open(anchor_path, 'w') as f:
+        f.write(utc_start_str.rstrip('Z'))
 
 def _fips_espec_path_for_date(date):
     """Return local path for the FIPS ESPEC TAB file covering *date*.
-
+    Downloads from PDS via the metadex API if the file is not already present.
     *date* can be a datetime, Timestamp, or datetime64.
-    Downloads from PDS FTP if the file is not present.
     """
     import urllib.request
     dt  = pd.Timestamp(date)
     doy = dt.day_of_year
     tag = f'{dt.year}{doy:03d}'
-    fname = f'FIPS_ESPEC_{tag}_DDR_V03.TAB'
+
+    # search FIPS/ for any version of this day's file
+    os.makedirs(_FIPS_ESPEC_DIR, exist_ok=True)
+    existing = [f for f in os.listdir(_FIPS_ESPEC_DIR)
+                if f.upper().startswith(f'FIPS_ESPEC_{tag}') and f.upper().endswith('.TAB')]
+    if existing:
+        return os.path.join(_FIPS_ESPEC_DIR, existing[0])
+
+    # resolve download URL + UTC anchor via metadex
+    tab_url, utc_str = _fips_tab_info_for_tag(tag)
+    if tab_url is None:
+        raise FileNotFoundError(
+            f"Could not resolve PDS download URL for FIPS ESPEC day {tag}.")
+    fname = tab_url.split('/')[-1]
     local = os.path.join(_FIPS_ESPEC_DIR, fname)
-
-    if not os.path.exists(local):
-        url = _FIPS_ESPEC_BASE + fname
-        print(f'Downloading {fname} …', end=' ', flush=True)
-        os.makedirs(_FIPS_ESPEC_DIR, exist_ok=True)
-        try:
-            urllib.request.urlretrieve(url, local)
-            print('done.')
-        except Exception as e:
-            if os.path.exists(local):
-                os.remove(local)
-            raise FileNotFoundError(
-                f"Could not download {fname} from PDS FTP.\n"
-                f"URL tried: {url}\nError: {e}"
-            ) from e
-
+    print(f'Downloading {fname} …', end=' ', flush=True)
+    try:
+        urllib.request.urlretrieve(tab_url, local)
+        print('done.')
+    except Exception as e:
+        if os.path.exists(local):
+            os.remove(local)
+        raise FileNotFoundError(
+            f"Download failed for {tab_url}: {e}") from e
+    if utc_str:
+        _fips_save_anchor(local, utc_str)
     return local
-
-_FIPS_COLLECTION_PAGE = ('https://pds-ppi.igpp.ucla.edu/collection/'
-                         'urn:nasa:pds:mess-epps-fips-derived:data-espec')
-_FIPS_ITEM_BASE       = 'https://pds-ppi.igpp.ucla.edu/item/'
-
-
-def _fips_tab_url_from_item_page(yyyydoy):
-    """
-    Fetch the PPI item page for the given day-of-year tag and return the
-    direct HTTPS URL of the TAB file, or None if not found.
-    """
-    import urllib.request
-    import re as _re
-
-    lid    = (f'urn:nasa:pds:mess-epps-fips-derived:data-espec:'
-              f'fips_espec_{yyyydoy}_ddr_v03')
-    # try version suffixes 1.2, 1.1, 1.0 in order
-    for ver in ('1.2', '1.1', '1.0'):
-        item_url = f'{_FIPS_ITEM_BASE}{lid}::{ver}'
-        try:
-            req = urllib.request.Request(item_url,
-                                         headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                html = resp.read().decode('utf-8', errors='replace')
-            # look for href containing the TAB filename
-            matches = _re.findall(
-                r'href=["\']([^"\']*FIPS_ESPEC[^"\']*\.TAB)["\']', html, _re.I)
-            for m in matches:
-                return m if m.startswith('http') else 'https://pds-ppi.igpp.ucla.edu' + m
-        except Exception:
-            continue
-    return None
-
 
 def download_all_fips_espec(overwrite=False):
     """
     Download every FIPS ESPEC TAB file from the PDS PPI collection into FIPS/.
 
-    Fetches the collection index page to discover all product day-of-year tags,
-    then downloads each TAB file via the individual item pages.
-    Skips files already present unless *overwrite=True*.
+    Queries the PPI metadex API for the full product list (1480 files), then
+    downloads each TAB file and saves a UTC anchor sidecar for each.
+    Skips files already present unless overwrite=True.
     """
     import urllib.request
-    import re as _re
 
     os.makedirs(_FIPS_ESPEC_DIR, exist_ok=True)
 
-    # --- discover all YYYYDOY tags from the collection page ---
-    print(f'Fetching collection index …')
-    req = urllib.request.Request(_FIPS_COLLECTION_PAGE,
-                                 headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        html = resp.read().decode('utf-8', errors='replace')
+    print('Querying PDS metadex for full product list …')
+    docs = _fips_metadex_query(
+        f'collection_id:"{_FIPS_COLLECTION_ID}"',
+        rows=2000,
+        fl='product_id,slot,data_file,start_date_time',
+    )
+    print(f'Found {len(docs)} products.')
 
-    tags = sorted(set(_re.findall(r'fips_espec_(\d{7})_ddr_v\d+', html, _re.I)))
-    if not tags:
-        raise RuntimeError(
-            'No product tags found on the collection page.\n'
-            f'Check that {_FIPS_COLLECTION_PAGE} is accessible and lists products.'
-        )
-    print(f'Found {len(tags)} products.')
+    for i, doc in enumerate(docs, 1):
+        slot      = doc.get('slot', '')
+        data_file = doc.get('data_file', '')
+        utc_str   = doc.get('start_date_time', '')
+        if not slot or not data_file:
+            print(f'[{i}/{len(docs)}] Missing slot/data_file — skipping.')
+            continue
 
-    for i, tag in enumerate(tags, 1):
-        fname = f'FIPS_ESPEC_{tag.upper()}_DDR_V03.TAB'
-        local = os.path.join(_FIPS_ESPEC_DIR, fname)
+        local = os.path.join(_FIPS_ESPEC_DIR, data_file)
         if os.path.exists(local) and not overwrite:
-            print(f'[{i}/{len(tags)}] {fname} — already present, skipping.')
+            # write anchor sidecar even for pre-existing files if missing
+            if utc_str and not os.path.exists(local + '.utc'):
+                _fips_save_anchor(local, utc_str)
+            print(f'[{i}/{len(docs)}] {data_file} — already present, skipping.')
             continue
 
-        tab_url = _fips_tab_url_from_item_page(tag)
-        if tab_url is None:
-            print(f'[{i}/{len(tags)}] {fname} — could not resolve download URL, skipping.')
-            continue
-
-        print(f'[{i}/{len(tags)}] Downloading {fname} …', end=' ', flush=True)
+        tab_url = _FIPS_DATA_BASE + slot + '/' + data_file
+        print(f'[{i}/{len(docs)}] Downloading {data_file} …', end=' ', flush=True)
         try:
             urllib.request.urlretrieve(tab_url, local)
             print('done.')
+            if utc_str:
+                _fips_save_anchor(local, utc_str)
         except Exception as e:
             print(f'FAILED: {e}')
             if os.path.exists(local):
@@ -3230,12 +4378,12 @@ def plot_fips_for_orbit(orb, species=None, save=True):
     orb_df = load_bowers_data_pkl(orbit_number=orb)
     date   = pd.to_datetime(orb_df['time'].iloc[0])
     path   = _fips_espec_path_for_date(date)
-    return plot_fips_espec_spectrogram(path, species=species, save=save)
+    return plot_fips_espec_spectrogram(path, species=species, orbit=orb, save=save)
 
 
-# --- Usage ---
+# --- Usage examples! ---
 
-trange = ['2015-04-05/01:54:00', '2015-04-05/02:02:00']
+#trange = ['2015-04-05/01:54:00', '2015-04-05/02:02:00']
 
 #traj = download_messenger_trajectory(
 #    trange=trange,
@@ -3260,29 +4408,39 @@ trange = ['2015-04-05/01:54:00', '2015-04-05/02:02:00']
 #print(data)
 
 # Show examples
-#event_filtering_toolkit_v1(human_labels=True)
+#event_filtering_toolkit_v1(human_DR=True)
 #nice_examples = [1638, 3936, 3940,1109,1118, 3964, 3946, 2687, 2909, 3451, 3206, 3458, 3485, 3158,]
-nice_examples = [3158,3936,3940,2909,3946,3451,3964,3458,3206,1109,2687,1638,1118,3485,]
+#nice_examples = [3158,3936,3940,2909,3946,3451,3964,3458,3206,1109,2687,1638,1118,3485,]
 
 # Hand-label examples
 #event_filtering_toolkit_v2(3653,3752) # continue from 3195
 
 # Summarize locations of selected events
-#plot_event_locations(orbit_labels=True)
+#plot_event_locations(orbit_labels=True, human_DR=True)
 
 # Plot their azimuthal field
-#plot_dr_bphi_locations(clim=(-10, 10))
+#plot_Bphi_locations(clim=(-10, 10), human_DR=True)
 
 # Plot chosen orbit examples
+#_fips_species = ['H+', 'He++']   # set to None to skip FIPS panels
+##_fips_species = None
+#_H_BASE = 5.0   # figure height (inches) for the two mag/FAC panels alone
 #for orbit in nice_examples:
-#    #orbit = 1638
-#    fig = plt.figure(figsize=(10, 5))               
-#    sf  = fig.subfigures(1, 1)                      
-#    _plot_orbit_into_subfig(sf, orb=orbit, label=str(orbit),ephemeris_labels=True,human_labels=_human_labels_for_orbit(orbit),ephemeris_coords='latlon',bx_zero_line=True,)                                   
+#    # height_ratios = [2, 2] + [1]*n_fips  →  4 + n_fips total units
+#   # Scale H so each ratio-unit is the same physical height regardless of n_fips:
+#    #   H = H_BASE * (4 + n_fips) / 4
+#    _n_fips = len(_fips_species) if _fips_species else 0
+#    fig = plt.figure(figsize=(10, _H_BASE * (4 + _n_fips) / 4))
+#    sf  = fig.subfigures(1, 1)
+#    _plot_orbit_into_subfig(sf, orb=orbit, label=str(orbit),
+#                            ephemeris_labels=True,
+#                            human_labels=_human_labels_for_orbit(orbit),
+#                            ephemeris_coords='latlon',
+#                            bx_zero_line=True,
+#                            species=_fips_species)
 #    plt.tight_layout()
 #    fig.savefig(f'figures/orbit_{orbit}.png', dpi=150, bbox_inches='tight')
-#    #plt.show()
-#    plt.close()
+#1    plt.close()
 
 # Refine filters
 #event_filtering_toolkit_v3()
@@ -3295,7 +4453,91 @@ nice_examples = [3158,3936,3940,2909,3946,3451,3964,3458,3206,1109,2687,1638,111
 #plot_fips_spectrogram('cdf/MES_FIPS_PHA_LIGHT64_20140210.cdf') 
 
 # Show Raines FIPS data
-#plot_fips_espec_spectrogram('FIPS/FIPS_ESPEC_2012229_DDR_V03.TAB', species=['H+']) 
+#plot_fips_for_orbit(1109, species=['H+', 'He++'])   
 
 # Download FIPS
 #download_all_fips_espec()
+
+# Swap to investigating loading times
+
+# Label loading events
+#event_filtering_toolkit_loading(2493,2578, species=['H+'], auto_review_page=True)
+
+# Show all labeled loading events
+#event_filtering_toolkit_v1(human_loading=True)
+
+# Show their locations
+#plot_event_locations(orbit_labels=True, human_loading=True, human_DR=False)
+
+# Show B_phi
+#plot_Bphi_locations(clim=(-30, 30), human_loading=True, human_DR=False)
+
+# Highlight a chosen subset of events
+def plot_nice_examples(orbits=None, fips_species=['H+'],
+                       show_loading_partition=True,
+                       partition_smooth_sec=30.0,
+                       second_panel='delta_b',
+                       save_dir='figures', dpi=150):
+    """
+    Plot and save orbit overview figures for a list of hand-picked orbits.
+
+    Parameters
+    ----------
+    orbits : list of int or None
+        Orbit numbers to plot.  Defaults to the built-in nice_examples list.
+    fips_species : list of str or None
+        FIPS species panels to append (e.g. ['H+']). None = no FIPS.
+    show_loading_partition : bool
+        Passed to _plot_orbit_into_subfig — draws the loading/unloading
+        partition line within each loading event.
+    partition_smooth_sec : float
+        Smoothing window for the partition (seconds).
+    second_panel : {'fac', 'delta_b'}
+        'fac'     — field-aligned ΔB_perp/phi/para (default).
+        'delta_b' — residuals in MSM coordinates: ΔBx, ΔBy, ΔBz.
+    save_dir : str
+        Directory for saved PNGs.
+    dpi : int
+        Figure resolution.
+    """
+    _nice_examples = [1071, 1083, 1109, 1113, 1118,
+                      3789, 3799, 3835, 3917, 3963]
+    if orbits is None:
+        orbits = _nice_examples
+
+    _loading_labels_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'human_loading_labels.json',
+    )
+    with open(_loading_labels_path) as _f:
+        _loading_labels_raw = json.load(_f)
+
+    def _labels_for_orbit(orb):
+        entry = _loading_labels_raw.get(str(orb), {})
+        return {
+            'load_ivs': [(pd.Timestamp(ev['start']), pd.Timestamp(ev['stop']))
+                         for ev in entry.get('loading_events', [])],
+            'dr_ivs': [],
+        }
+
+    os.makedirs(save_dir, exist_ok=True)
+    H_BASE  = 5.0
+    n_fips  = len(fips_species) if fips_species else 0
+
+    for orbit in orbits:
+        fig = plt.figure(figsize=(10, H_BASE * (4 + n_fips) / 4))
+        sf  = fig.subfigures(1, 1)
+        _plot_orbit_into_subfig(sf, orb=orbit, label=str(orbit),
+                                ephemeris_labels=True,
+                                human_labels=_labels_for_orbit(orbit),
+                                ephemeris_coords='latlon',
+                                bx_zero_line=True,
+                                species=fips_species,
+                                show_loading_partition=show_loading_partition,
+                                partition_smooth_sec=partition_smooth_sec,
+                                second_panel=second_panel)
+        plt.tight_layout()
+        out = os.path.join(save_dir, f'orbit_{orbit}.png')
+        fig.savefig(out, dpi=dpi, bbox_inches='tight')
+        plt.close()
+        print(f'  Saved → {out}')
