@@ -1,0 +1,2296 @@
+{
+  "1065": {
+    "loading_events": [
+      {
+        "start": "2012-08-01T22:36:15.308132",
+        "stop": "2012-08-01T22:37:54.729901"
+      }
+    ],
+    "reviewed": true
+  },
+  "1071": {
+    "loading_events": [
+      {
+        "start": "2012-08-03T22:35:34.469852",
+        "stop": "2012-08-03T22:39:39.551020"
+      }
+    ],
+    "reviewed": true
+  },
+  "1072": {
+    "loading_events": [
+      {
+        "start": "2012-08-04T06:29:17.078308",
+        "stop": "2012-08-04T06:37:07.072124"
+      }
+    ],
+    "reviewed": true
+  },
+  "1075": {
+    "loading_events": [
+      {
+        "start": "2012-08-05T06:27:26.272263",
+        "stop": "2012-08-05T06:32:34.600186"
+      }
+    ],
+    "reviewed": true
+  },
+  "1079": {
+    "loading_events": [
+      {
+        "start": "2012-08-06T14:30:18.647959",
+        "stop": "2012-08-06T14:35:57.469852"
+      }
+    ],
+    "reviewed": true
+  },
+  "1080": {
+    "loading_events": [
+      {
+        "start": "2012-08-06T22:32:54.117810",
+        "stop": "2012-08-06T22:38:26.163265"
+      }
+    ],
+    "reviewed": true
+  },
+  "1083": {
+    "loading_events": [
+      {
+        "start": "2012-08-07T22:37:03.551948",
+        "stop": "2012-08-07T22:45:57.761132"
+      }
+    ],
+    "reviewed": true
+  },
+  "1084": {
+    "loading_events": [
+      {
+        "start": "2012-08-08T06:29:50.471707",
+        "stop": "2012-08-08T06:36:07.693414"
+      },
+      {
+        "start": "2012-08-08T06:44:28.020408",
+        "stop": "2012-08-08T06:46:42.419759"
+      }
+    ],
+    "reviewed": true
+  },
+  "1089": {
+    "loading_events": [
+      {
+        "start": "2012-08-09T23:04:56.416280",
+        "stop": "2012-08-09T23:07:53.793754"
+      }
+    ],
+    "reviewed": true
+  },
+  "1092": {
+    "loading_events": [
+      {
+        "start": "2012-08-10T22:26:36.860158",
+        "stop": "2012-08-10T22:37:26.491033"
+      }
+    ],
+    "reviewed": true
+  },
+  "1096": {
+    "loading_events": [
+      {
+        "start": "2012-08-12T06:27:08.417672",
+        "stop": "2012-08-12T06:30:38.559137"
+      },
+      {
+        "start": "2012-08-12T06:30:56.635822",
+        "stop": "2012-08-12T06:34:49.373144"
+      }
+    ],
+    "reviewed": true
+  },
+  "1098": {
+    "loading_events": [
+      {
+        "start": "2012-08-12T22:37:55.620826",
+        "stop": "2012-08-12T22:42:31.290275"
+      },
+      {
+        "start": "2012-08-12T23:07:29.395563",
+        "stop": "2012-08-12T23:11:06.315785"
+      }
+    ],
+    "reviewed": true
+  },
+  "1099": {
+    "loading_events": [
+      {
+        "start": "2012-08-13T06:35:21.629252",
+        "stop": "2012-08-13T06:37:32.730056"
+      },
+      {
+        "start": "2012-08-13T06:38:48.452072",
+        "stop": "2012-08-13T06:40:41.470006"
+      },
+      {
+        "start": "2012-08-13T07:04:57.141002",
+        "stop": "2012-08-13T07:07:26.324675"
+      },
+      {
+        "start": "2012-08-13T07:09:37.425479",
+        "stop": "2012-08-13T07:12:37.123995"
+      }
+    ],
+    "reviewed": true
+  },
+  "1104": {
+    "loading_events": [
+      {
+        "start": "2012-08-14T22:37:04.687152",
+        "stop": "2012-08-14T22:38:48.699212"
+      },
+      {
+        "start": "2012-08-14T23:13:43.637755",
+        "stop": "2012-08-14T23:15:23.127551"
+      }
+    ],
+    "reviewed": true
+  },
+  "1105": {
+    "loading_events": [
+      {
+        "start": "2012-08-15T07:07:06.025742",
+        "stop": "2012-08-15T07:11:00.052876"
+      }
+    ],
+    "reviewed": true
+  },
+  "1109": {
+    "loading_events": [
+      {
+        "start": "2012-08-16T15:02:22.357143",
+        "stop": "2012-08-16T15:05:10.869048"
+      },
+      {
+        "start": "2012-08-16T14:31:57",
+        "stop": "2012-08-16T14:43:05.392857"
+      }
+    ],
+    "reviewed": true
+  },
+  "1110": {
+    "loading_events": [
+      {
+        "start": "2012-08-16T22:50:41.985080",
+        "stop": "2012-08-16T22:52:15.886209"
+      },
+      {
+        "start": "2012-08-16T23:03:17.719465",
+        "stop": "2012-08-16T23:06:37.966450"
+      },
+      {
+        "start": "2012-08-16T23:06:53.805195",
+        "stop": "2012-08-16T23:10:26.496908"
+      }
+    ],
+    "reviewed": true
+  },
+  "1111": {
+    "loading_events": [
+      {
+        "start": "2012-08-17T06:39:54.071196",
+        "stop": "2012-08-17T06:41:41.548392"
+      },
+      {
+        "start": "2012-08-17T06:47:19.818723",
+        "stop": "2012-08-17T06:48:43.537802"
+      },
+      {
+        "start": "2012-08-17T07:08:04.291512",
+        "stop": "2012-08-17T07:09:56.294063"
+      },
+      {
+        "start": "2012-08-17T07:11:23.407158",
+        "stop": "2012-08-17T07:12:30.156153"
+      }
+    ],
+    "reviewed": true
+  },
+  "1112": {
+    "loading_events": [
+      {
+        "start": "2012-08-17T15:05:56.793522",
+        "stop": "2012-08-17T15:10:52.072975"
+      }
+    ],
+    "reviewed": true
+  },
+  "1113": {
+    "loading_events": [
+      {
+        "start": "2012-08-17T22:42:20.996290",
+        "stop": "2012-08-17T22:43:39.085343"
+      },
+      {
+        "start": "2012-08-17T22:43:56.061225",
+        "stop": "2012-08-17T22:44:44.725418"
+      },
+      {
+        "start": "2012-08-17T22:45:17.545454",
+        "stop": "2012-08-17T22:46:20.922078"
+      },
+      {
+        "start": "2012-08-17T22:29:17.842301",
+        "stop": "2012-08-17T22:35:46.024119"
+      },
+      {
+        "start": "2012-08-17T23:05:45.467532",
+        "stop": "2012-08-17T23:07:52.220780"
+      },
+      {
+        "start": "2012-08-17T23:08:13.954700",
+        "stop": "2012-08-17T23:11:14.684446"
+      },
+      {
+        "start": "2012-08-17T23:12:37.989564",
+        "stop": "2012-08-17T23:15:42.955164"
+      },
+      {
+        "start": "2012-08-17T22:49:04.626469",
+        "stop": "2012-08-17T22:50:57.582560"
+      },
+      {
+        "start": "2012-08-17T22:51:07.466218",
+        "stop": "2012-08-17T22:52:39.243042"
+      },
+      {
+        "start": "2012-08-17T22:59:37.180581",
+        "stop": "2012-08-17T23:03:44.272032"
+      },
+      {
+        "start": "2012-08-17T22:40:58.915275",
+        "stop": "2012-08-17T22:41:49.745516"
+      }
+    ],
+    "reviewed": true
+  },
+  "1114": {
+    "loading_events": [
+      {
+        "start": "2012-08-18T06:34:07.378479",
+        "stop": "2012-08-18T06:36:45.690167"
+      },
+      {
+        "start": "2012-08-18T06:43:22.882885",
+        "stop": "2012-08-18T06:44:33.557746"
+      },
+      {
+        "start": "2012-08-18T06:51:02.269481",
+        "stop": "2012-08-18T06:52:55.349258"
+      }
+    ],
+    "reviewed": true
+  },
+  "1115": {
+    "loading_events": [
+      {
+        "start": "2012-08-18T14:39:28.525046",
+        "stop": "2012-08-18T14:41:39.805195"
+      },
+      {
+        "start": "2012-08-18T14:45:00.120594",
+        "stop": "2012-08-18T14:48:01.196660"
+      }
+    ],
+    "reviewed": true
+  },
+  "1116": {
+    "loading_events": [
+      {
+        "start": "2012-08-18T23:00:01.967146",
+        "stop": "2012-08-18T23:03:14.426175"
+      },
+      {
+        "start": "2012-08-18T23:06:08.771413",
+        "stop": "2012-08-18T23:08:09.907390"
+      },
+      {
+        "start": "2012-08-18T23:10:45.006726",
+        "stop": "2012-08-18T23:13:17.841837"
+      }
+    ],
+    "reviewed": true
+  },
+  "1117": {
+    "loading_events": [
+      {
+        "start": "2012-08-19T07:06:23.828308",
+        "stop": "2012-08-19T07:10:05.722248"
+      }
+    ],
+    "reviewed": true
+  },
+  "1118": {
+    "loading_events": [
+      {
+        "start": "2012-08-19T14:45:31.270099",
+        "stop": "2012-08-19T14:50:32.514688"
+      },
+      {
+        "start": "2012-08-19T14:59:03.271490",
+        "stop": "2012-08-19T15:02:19.193723"
+      },
+      {
+        "start": "2012-08-19T15:02:27.121212",
+        "stop": "2012-08-19T15:05:03.405999"
+      }
+    ],
+    "reviewed": true
+  },
+  "1121": {
+    "loading_events": [
+      {
+        "start": "2012-08-20T15:05:17.240260",
+        "stop": "2012-08-20T15:08:11.764070"
+      }
+    ],
+    "reviewed": true
+  },
+  "1122": {
+    "loading_events": [
+      {
+        "start": "2012-08-20T23:04:40.909632",
+        "stop": "2012-08-20T23:08:03.834416"
+      }
+    ],
+    "reviewed": true
+  },
+  "1180": {
+    "loading_events": [
+      {
+        "start": "2012-09-09T07:51:01.737631",
+        "stop": "2012-09-09T07:54:29.212121"
+      }
+    ],
+    "reviewed": true
+  },
+  "1198": {
+    "loading_events": [
+      {
+        "start": "2012-09-15T07:49:26.742192",
+        "stop": "2012-09-15T07:52:21.198748"
+      },
+      {
+        "start": "2012-09-15T07:53:54.732684",
+        "stop": "2012-09-15T07:55:07.247758"
+      },
+      {
+        "start": "2012-09-15T08:20:29.013374",
+        "stop": "2012-09-15T08:23:02.451067"
+      }
+    ],
+    "reviewed": true
+  },
+  "1209": {
+    "loading_events": [
+      {
+        "start": "2012-09-19T00:11:32.409091",
+        "stop": "2012-09-19T00:14:12.446196"
+      }
+    ],
+    "reviewed": true
+  },
+  "2333": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2334": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2335": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2336": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2337": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2338": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2339": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2340": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2341": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2342": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2343": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2344": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2345": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2346": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2347": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2348": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2349": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2350": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2351": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2352": {
+    "loading_events": [
+      {
+        "start": "2013-10-08T00:40:34.651206",
+        "stop": "2013-10-08T00:44:51.163265"
+      }
+    ],
+    "reviewed": true
+  },
+  "2353": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2354": {
+    "loading_events": [
+      {
+        "start": "2013-10-08T16:36:51.672619",
+        "stop": "2013-10-08T16:39:28.830937"
+      }
+    ],
+    "reviewed": true
+  },
+  "2355": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2356": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2357": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2358": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2359": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2360": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2361": {
+    "loading_events": [
+      {
+        "start": "2013-10-11T00:36:31.403061",
+        "stop": "2013-10-11T00:39:00.178572"
+      }
+    ],
+    "reviewed": true
+  },
+  "2362": {
+    "loading_events": [
+      {
+        "start": "2013-10-11T08:36:56.547542",
+        "stop": "2013-10-11T08:39:32.438466"
+      }
+    ],
+    "reviewed": true
+  },
+  "2363": {
+    "loading_events": [
+      {
+        "start": "2013-10-11T16:37:32.519249",
+        "stop": "2013-10-11T16:42:06.102660"
+      }
+    ],
+    "reviewed": true
+  },
+  "2364": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2365": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2366": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2367": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2368": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2369": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2370": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2371": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2372": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2373": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2374": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2375": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2376": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2377": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2378": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2379": {
+    "loading_events": [
+      {
+        "start": "2013-10-17T00:34:05.482684",
+        "stop": "2013-10-17T00:38:32.271104"
+      }
+    ],
+    "reviewed": true
+  },
+  "2380": {
+    "loading_events": [
+      {
+        "start": "2013-10-17T08:41:45.428572",
+        "stop": "2013-10-17T08:44:17.821892"
+      }
+    ],
+    "reviewed": true
+  },
+  "2381": {
+    "loading_events": [
+      {
+        "start": "2013-10-17T16:30:34.864255",
+        "stop": "2013-10-17T16:32:21.911256"
+      }
+    ],
+    "reviewed": true
+  },
+  "2382": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2383": {
+    "loading_events": [
+      {
+        "start": "2013-10-18T08:28:28.928572",
+        "stop": "2013-10-18T08:32:32.780612"
+      },
+      {
+        "start": "2013-10-18T08:36:57.210884",
+        "stop": "2013-10-18T08:40:34.311224"
+      }
+    ],
+    "reviewed": true
+  },
+  "2384": {
+    "loading_events": [
+      {
+        "start": "2013-10-18T16:32:58.329932",
+        "stop": "2013-10-18T16:39:47.836735"
+      },
+      {
+        "start": "2013-10-18T16:40:14.588436",
+        "stop": "2013-10-18T16:42:30.404762"
+      }
+    ],
+    "reviewed": true
+  },
+  "2385": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2386": {
+    "loading_events": [
+      {
+        "start": "2013-10-19T08:28:22.234694",
+        "stop": "2013-10-19T08:32:45.636054"
+      },
+      {
+        "start": "2013-10-19T08:40:19.386054",
+        "stop": "2013-10-19T08:44:12.948980"
+      }
+    ],
+    "reviewed": true
+  },
+  "2387": {
+    "loading_events": [
+      {
+        "start": "2013-10-19T16:30:35.742811",
+        "stop": "2013-10-19T16:33:40.877319"
+      }
+    ],
+    "reviewed": true
+  },
+  "2388": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2389": {
+    "loading_events": [
+      {
+        "start": "2013-10-20T08:28:43.290043",
+        "stop": "2013-10-20T08:32:43.874459"
+      }
+    ],
+    "reviewed": true
+  },
+  "2390": {
+    "loading_events": [
+      {
+        "start": "2013-10-20T16:37:17.162338",
+        "stop": "2013-10-20T16:46:32.357143"
+      }
+    ],
+    "reviewed": true
+  },
+  "2391": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2392": {
+    "loading_events": [
+      {
+        "start": "2013-10-21T08:40:02.077845",
+        "stop": "2013-10-21T08:42:23.907622"
+      }
+    ],
+    "reviewed": true
+  },
+  "2393": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2394": {
+    "loading_events": [
+      {
+        "start": "2013-10-22T00:30:31.257885",
+        "stop": "2013-10-22T00:32:20.158627"
+      },
+      {
+        "start": "2013-10-22T00:34:02.895176",
+        "stop": "2013-10-22T00:36:33.917904"
+      },
+      {
+        "start": "2013-10-22T00:38:48.502783",
+        "stop": "2013-10-22T00:40:21.993043"
+      },
+      {
+        "start": "2013-10-22T00:46:24.653061",
+        "stop": "2013-10-22T00:47:44.787570"
+      }
+    ],
+    "reviewed": true
+  },
+  "2395": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2396": {
+    "loading_events": [
+      {
+        "start": "2013-10-22T16:30:05.176639",
+        "stop": "2013-10-22T16:46:34.157390"
+      }
+    ],
+    "reviewed": true
+  },
+  "2397": {
+    "loading_events": [
+      {
+        "start": "2013-10-23T00:34:56.502164",
+        "stop": "2013-10-23T00:42:40.521954"
+      }
+    ],
+    "reviewed": true
+  },
+  "2398": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2399": {
+    "loading_events": [
+      {
+        "start": "2013-10-23T16:40:09.240569",
+        "stop": "2013-10-23T16:48:20.978355"
+      }
+    ],
+    "reviewed": true
+  },
+  "2400": {
+    "loading_events": [
+      {
+        "start": "2013-10-24T00:37:14.342764",
+        "stop": "2013-10-24T00:42:22.204546"
+      },
+      {
+        "start": "2013-10-24T00:44:06.877551",
+        "stop": "2013-10-24T00:47:58.800093"
+      }
+    ],
+    "reviewed": true
+  },
+  "2401": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2402": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2403": {
+    "loading_events": [
+      {
+        "start": "2013-10-25T00:30:53.005566",
+        "stop": "2013-10-25T00:43:04.414811"
+      },
+      {
+        "start": "2013-10-25T00:43:47.499227",
+        "stop": "2013-10-25T00:49:00.374150"
+      }
+    ],
+    "reviewed": true
+  },
+  "2404": {
+    "loading_events": [
+      {
+        "start": "2013-10-25T08:34:56.843074",
+        "stop": "2013-10-25T08:39:31.659091"
+      }
+    ],
+    "reviewed": true
+  },
+  "2405": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2406": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2407": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2408": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2409": {
+    "loading_events": [
+      {
+        "start": "2013-10-27T00:37:29.497217",
+        "stop": "2013-10-27T00:43:41.589054"
+      },
+      {
+        "start": "2013-10-27T00:44:46.166976",
+        "stop": "2013-10-27T00:48:24.501855"
+      }
+    ],
+    "reviewed": true
+  },
+  "2410": {
+    "loading_events": [
+      {
+        "start": "2013-10-27T08:31:50.994048",
+        "stop": "2013-10-27T08:40:14.102041"
+      },
+      {
+        "start": "2013-10-27T08:54:05.101190",
+        "stop": "2013-10-27T08:55:50.641156"
+      }
+    ],
+    "reviewed": true
+  },
+  "2411": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2412": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2413": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2414": {
+    "loading_events": [
+      {
+        "start": "2013-10-28T16:42:31.086271",
+        "stop": "2013-10-28T16:47:03.440167"
+      },
+      {
+        "start": "2013-10-28T16:50:50.743043",
+        "stop": "2013-10-28T16:55:01.595316"
+      }
+    ],
+    "reviewed": true
+  },
+  "2415": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2416": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2417": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2418": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2419": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2420": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2421": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2422": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2423": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2424": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2425": {
+    "loading_events": [
+      {
+        "start": "2013-11-01T08:40:17.680427",
+        "stop": "2013-11-01T08:44:58.611549"
+      },
+      {
+        "start": "2013-11-01T08:49:10.938776",
+        "stop": "2013-11-01T08:52:39.338590"
+      },
+      {
+        "start": "2013-11-01T09:07:25.037802",
+        "stop": "2013-11-01T09:08:38.590677"
+      },
+      {
+        "start": "2013-11-01T09:09:43.971011",
+        "stop": "2013-11-01T09:11:58.817950"
+      }
+    ],
+    "reviewed": true
+  },
+  "2426": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2427": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2428": {
+    "loading_events": [
+      {
+        "start": "2013-11-02T08:46:47.737786",
+        "stop": "2013-11-02T08:48:17.567718"
+      }
+    ],
+    "reviewed": true
+  },
+  "2429": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2430": {
+    "loading_events": [
+      {
+        "start": "2013-11-03T00:47:44.204082",
+        "stop": "2013-11-03T00:52:56.448980"
+      }
+    ],
+    "reviewed": true
+  },
+  "2431": {
+    "loading_events": [
+      {
+        "start": "2013-11-03T08:56:25.951840",
+        "stop": "2013-11-03T08:58:58.955087"
+      },
+      {
+        "start": "2013-11-03T08:41:15.072511",
+        "stop": "2013-11-03T08:44:52.337121"
+      }
+    ],
+    "reviewed": true
+  },
+  "2432": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2433": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2434": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2435": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2436": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2437": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2438": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2439": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2440": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2441": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2442": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2443": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2444": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2445": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2446": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2447": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2448": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2449": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2469": {
+    "loading_events": [
+      {
+        "start": "2013-11-16T01:47:10.680195",
+        "stop": "2013-11-16T01:52:56.442022"
+      }
+    ],
+    "reviewed": true
+  },
+  "2470": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2471": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2472": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2473": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2474": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2475": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2476": {
+    "loading_events": [
+      {
+        "start": "2013-11-18T09:51:18.693878",
+        "stop": "2013-11-18T09:53:19.459184"
+      }
+    ],
+    "reviewed": true
+  },
+  "2477": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2478": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2479": {
+    "loading_events": [
+      {
+        "start": "2013-11-19T09:50:00.560606",
+        "stop": "2013-11-19T09:51:46.715909"
+      },
+      {
+        "start": "2013-11-19T09:52:06.829545",
+        "stop": "2013-11-19T09:53:55.219697"
+      }
+    ],
+    "reviewed": true
+  },
+  "2480": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2481": {
+    "loading_events": [
+      {
+        "start": "2013-11-20T01:53:17.583334",
+        "stop": "2013-11-20T01:55:37.261364"
+      },
+      {
+        "start": "2013-11-20T01:57:51.352273",
+        "stop": "2013-11-20T02:00:21.087121"
+      }
+    ],
+    "reviewed": true
+  },
+  "2482": {
+    "loading_events": [
+      {
+        "start": "2013-11-20T09:44:11.340909",
+        "stop": "2013-11-20T09:47:01.189394"
+      },
+      {
+        "start": "2013-11-20T10:11:17.193182",
+        "stop": "2013-11-20T10:13:42.458333"
+      },
+      {
+        "start": "2013-11-20T10:21:03.840909",
+        "stop": "2013-11-20T10:26:10.015151"
+      }
+    ],
+    "reviewed": true
+  },
+  "2483": {
+    "loading_events": [
+      {
+        "start": "2013-11-20T17:50:49.439394",
+        "stop": "2013-11-20T17:54:53.037879"
+      },
+      {
+        "start": "2013-11-20T18:14:22.981061",
+        "stop": "2013-11-20T18:18:12.053030"
+      }
+    ],
+    "reviewed": true
+  },
+  "2484": {
+    "loading_events": [
+      {
+        "start": "2013-11-21T01:52:03.367424",
+        "stop": "2013-11-21T01:53:30.526515"
+      }
+    ],
+    "reviewed": true
+  },
+  "2485": {
+    "loading_events": [
+      {
+        "start": "2013-11-21T09:53:35.174242",
+        "stop": "2013-11-21T09:55:14.625000"
+      }
+    ],
+    "reviewed": true
+  },
+  "2486": {
+    "loading_events": [
+      {
+        "start": "2013-11-21T17:46:54.314394",
+        "stop": "2013-11-21T17:48:31.530303"
+      },
+      {
+        "start": "2013-11-21T17:50:15.450758",
+        "stop": "2013-11-21T17:51:13.556818"
+      },
+      {
+        "start": "2013-11-21T17:51:54.901515",
+        "stop": "2013-11-21T17:52:53.007576"
+      },
+      {
+        "start": "2013-11-21T17:54:31.340909",
+        "stop": "2013-11-21T17:56:27.553030"
+      },
+      {
+        "start": "2013-11-21T18:18:51.814394",
+        "stop": "2013-11-21T18:20:48.026515"
+      },
+      {
+        "start": "2013-11-21T18:21:27.136364",
+        "stop": "2013-11-21T18:24:40.450758"
+      },
+      {
+        "start": "2013-11-21T18:30:01.151515",
+        "stop": "2013-11-21T18:32:45.412879"
+      }
+    ],
+    "reviewed": true
+  },
+  "2487": {
+    "loading_events": [
+      {
+        "start": "2013-11-22T01:51:12.484385",
+        "stop": "2013-11-22T01:53:00.837044"
+      },
+      {
+        "start": "2013-11-22T01:57:04.351268",
+        "stop": "2013-11-22T01:58:21.426871"
+      },
+      {
+        "start": "2013-11-22T02:18:27.827613",
+        "stop": "2013-11-22T02:20:37.403989"
+      }
+    ],
+    "reviewed": true
+  },
+  "2488": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2489": {
+    "loading_events": [
+      {
+        "start": "2013-11-22T17:51:10.728819",
+        "stop": "2013-11-22T17:53:27.007421"
+      },
+      {
+        "start": "2013-11-22T17:53:41.528912",
+        "stop": "2013-11-22T17:55:23.179344"
+      }
+    ],
+    "reviewed": true
+  },
+  "2490": {
+    "loading_events": [
+      {
+        "start": "2013-11-23T01:59:02.416512",
+        "stop": "2013-11-23T02:00:18.375077"
+      }
+    ],
+    "reviewed": true
+  },
+  "2491": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2492": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2493": {
+    "loading_events": [
+      {
+        "start": "2013-11-24T01:48:04.310606",
+        "stop": "2013-11-24T01:51:14.272727"
+      },
+      {
+        "start": "2013-11-24T01:54:17.530303",
+        "stop": "2013-11-24T01:57:17.435606"
+      },
+      {
+        "start": "2013-11-24T02:22:53.893940",
+        "stop": "2013-11-24T02:24:32.227273"
+      }
+    ],
+    "reviewed": true
+  },
+  "2494": {
+    "loading_events": [
+      {
+        "start": "2013-11-24T09:50:25.302102",
+        "stop": "2013-11-24T09:52:35.995516"
+      },
+      {
+        "start": "2013-11-24T09:55:40.306741",
+        "stop": "2013-11-24T09:56:57.382344"
+      }
+    ],
+    "reviewed": true
+  },
+  "2495": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2496": {
+    "loading_events": [
+      {
+        "start": "2013-11-25T02:17:50.958333",
+        "stop": "2013-11-25T02:19:33.761364"
+      },
+      {
+        "start": "2013-11-25T02:22:56.015152",
+        "stop": "2013-11-25T02:24:06.412879"
+      },
+      {
+        "start": "2013-11-25T02:25:02.284091",
+        "stop": "2013-11-25T02:26:55.143940"
+      }
+    ],
+    "reviewed": true
+  },
+  "2497": {
+    "loading_events": [
+      {
+        "start": "2013-11-25T09:52:15.782158",
+        "stop": "2013-11-25T09:54:38.762987"
+      }
+    ],
+    "reviewed": true
+  },
+  "2498": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2499": {
+    "loading_events": [
+      {
+        "start": "2013-11-26T02:25:51.630798",
+        "stop": "2013-11-26T02:27:57.856061"
+      }
+    ],
+    "reviewed": true
+  },
+  "2500": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2501": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2502": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2503": {
+    "loading_events": [
+      {
+        "start": "2013-11-27T09:50:08.651515",
+        "stop": "2013-11-27T09:53:07.439394"
+      }
+    ],
+    "reviewed": true
+  },
+  "2504": {
+    "loading_events": [
+      {
+        "start": "2013-11-27T18:25:53.401515",
+        "stop": "2013-11-27T18:28:58.893939"
+      }
+    ],
+    "reviewed": true
+  },
+  "2505": {
+    "loading_events": [
+      {
+        "start": "2013-11-28T02:00:26.295454",
+        "stop": "2013-11-28T02:04:41.068182"
+      }
+    ],
+    "reviewed": true
+  },
+  "2506": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2507": {
+    "loading_events": [
+      {
+        "start": "2013-11-28T17:51:00.587121",
+        "stop": "2013-11-28T17:59:20.075758"
+      }
+    ],
+    "reviewed": true
+  },
+  "2508": {
+    "loading_events": [
+      {
+        "start": "2013-11-29T01:50:58.765152",
+        "stop": "2013-11-29T01:53:09.503788"
+      },
+      {
+        "start": "2013-11-29T02:19:54.125000",
+        "stop": "2013-11-29T02:25:48.348485"
+      },
+      {
+        "start": "2013-11-29T01:59:21.606060",
+        "stop": "2013-11-29T02:00:46.530303"
+      }
+    ],
+    "reviewed": true
+  },
+  "2509": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2510": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2511": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2512": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2513": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2514": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2515": {
+    "loading_events": [
+      {
+        "start": "2013-12-01T09:54:42.140152",
+        "stop": "2013-12-01T09:57:24.166667"
+      },
+      {
+        "start": "2013-12-01T10:17:08.636364",
+        "stop": "2013-12-01T10:20:33.125000"
+      },
+      {
+        "start": "2013-12-01T10:21:40.170455",
+        "stop": "2013-12-01T10:24:00.965909"
+      },
+      {
+        "start": "2013-12-01T10:28:34.734848",
+        "stop": "2013-12-01T10:31:13.409091"
+      }
+    ],
+    "reviewed": true
+  },
+  "2516": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2517": {
+    "loading_events": [
+      {
+        "start": "2013-12-02T01:56:41.530303",
+        "stop": "2013-12-02T02:00:36.189394"
+      },
+      {
+        "start": "2013-12-02T02:31:25.526515",
+        "stop": "2013-12-02T02:34:18.727273"
+      }
+    ],
+    "reviewed": true
+  },
+  "2518": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2519": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2520": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2521": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2522": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2523": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2524": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2525": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2526": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2527": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2528": {
+    "loading_events": [
+      {
+        "start": "2013-12-05T18:19:34.750464",
+        "stop": "2013-12-05T18:24:41.935838"
+      }
+    ],
+    "reviewed": true
+  },
+  "2529": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2530": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2531": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2532": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2533": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2534": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2535": {
+    "loading_events": [
+      {
+        "start": "2013-12-08T02:19:01.426561",
+        "stop": "2013-12-08T02:21:33.185992"
+      },
+      {
+        "start": "2013-12-08T02:23:01.340368",
+        "stop": "2013-12-08T02:31:16.790275"
+      }
+    ],
+    "reviewed": true
+  },
+  "2536": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2537": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2538": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2539": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2540": {
+    "loading_events": [
+      {
+        "start": "2013-12-09T18:19:02.043599",
+        "stop": "2013-12-09T18:20:17.897032"
+      },
+      {
+        "start": "2013-12-09T18:20:26.820964",
+        "stop": "2013-12-09T18:24:52.307978"
+      }
+    ],
+    "reviewed": true
+  },
+  "2541": {
+    "loading_events": [
+      {
+        "start": "2013-12-10T01:51:12.690631",
+        "stop": "2013-12-10T01:53:20.972171"
+      }
+    ],
+    "reviewed": true
+  },
+  "2542": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2543": {
+    "loading_events": [
+      {
+        "start": "2013-12-10T18:12:28.658163",
+        "stop": "2013-12-10T18:14:42.517162"
+      }
+    ],
+    "reviewed": true
+  },
+  "2544": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2545": {
+    "loading_events": [
+      {
+        "start": "2013-12-11T10:20:57.650124",
+        "stop": "2013-12-11T10:26:36.642084"
+      }
+    ],
+    "reviewed": true
+  },
+  "2546": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2547": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2548": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2549": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2550": {
+    "loading_events": [
+      {
+        "start": "2013-12-13T01:51:32.664502",
+        "stop": "2013-12-13T01:55:20.067100"
+      }
+    ],
+    "reviewed": true
+  },
+  "2551": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2552": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2553": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2554": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2555": {
+    "loading_events": [
+      {
+        "start": "2013-12-14T17:54:27.973330",
+        "stop": "2013-12-14T17:55:54.891234"
+      },
+      {
+        "start": "2013-12-14T17:56:14.949212",
+        "stop": "2013-12-14T17:57:38.524119"
+      }
+    ],
+    "reviewed": true
+  },
+  "2556": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2557": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2558": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2559": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2560": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2561": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2562": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2563": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2564": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2565": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2566": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2567": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2568": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2569": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "2570": {
+    "loading_events": [],
+    "reviewed": true
+  },
+  "3788": {
+    "loading_events": [
+      {
+        "start": "2015-02-03T09:03:37.761364",
+        "stop": "2015-02-03T09:06:08.391002"
+      }
+    ],
+    "reviewed": true
+  },
+  "3789": {
+    "loading_events": [
+      {
+        "start": "2015-02-03T17:15:49.407854",
+        "stop": "2015-02-03T17:19:02.747372"
+      }
+    ],
+    "reviewed": true
+  },
+  "3793": {
+    "loading_events": [
+      {
+        "start": "2015-02-05T02:21:11.655535",
+        "stop": "2015-02-05T02:22:47.611781"
+      }
+    ],
+    "reviewed": true
+  },
+  "3794": {
+    "loading_events": [
+      {
+        "start": "2015-02-05T10:33:45.190167",
+        "stop": "2015-02-05T10:35:44.995362"
+      }
+    ],
+    "reviewed": true
+  },
+  "3796": {
+    "loading_events": [
+      {
+        "start": "2015-02-06T03:07:52.996444",
+        "stop": "2015-02-06T03:09:52.899042"
+      }
+    ],
+    "reviewed": true
+  },
+  "3799": {
+    "loading_events": [
+      {
+        "start": "2015-02-07T04:02:49.467532",
+        "stop": "2015-02-07T04:05:08.684446"
+      }
+    ],
+    "reviewed": true
+  },
+  "3802": {
+    "loading_events": [
+      {
+        "start": "2015-02-08T04:50:33.345779",
+        "stop": "2015-02-08T04:53:13.800325"
+      }
+    ],
+    "reviewed": true
+  },
+  "3805": {
+    "loading_events": [
+      {
+        "start": "2015-02-09T05:39:34.209029",
+        "stop": "2015-02-09T05:40:40.190013"
+      }
+    ],
+    "reviewed": true
+  },
+  "3808": {
+    "loading_events": [
+      {
+        "start": "2015-02-10T06:30:14.561302",
+        "stop": "2015-02-10T06:35:03.697820"
+      }
+    ],
+    "reviewed": true
+  },
+  "3809": {
+    "loading_events": [
+      {
+        "start": "2015-02-10T14:47:07.624227",
+        "stop": "2015-02-10T14:50:32.509044"
+      }
+    ],
+    "reviewed": true
+  },
+  "3810": {
+    "loading_events": [
+      {
+        "start": "2015-02-10T23:03:35.883116",
+        "stop": "2015-02-10T23:06:16.792208"
+      }
+    ],
+    "reviewed": true
+  },
+  "3811": {
+    "loading_events": [
+      {
+        "start": "2015-02-11T07:21:03.435065",
+        "stop": "2015-02-11T07:24:51.389610"
+      }
+    ],
+    "reviewed": true
+  },
+  "3817": {
+    "loading_events": [
+      {
+        "start": "2015-02-13T08:53:54.027597",
+        "stop": "2015-02-13T08:57:32.668599"
+      }
+    ],
+    "reviewed": true
+  },
+  "3820": {
+    "loading_events": [
+      {
+        "start": "2015-02-14T09:44:00.621212",
+        "stop": "2015-02-14T09:48:04.391311"
+      }
+    ],
+    "reviewed": true
+  },
+  "3831": {
+    "loading_events": [
+      {
+        "start": "2015-02-18T04:51:52.732375",
+        "stop": "2015-02-18T04:54:50.567486"
+      }
+    ],
+    "reviewed": true
+  },
+  "3835": {
+    "loading_events": [
+      {
+        "start": "2015-02-19T14:02:25.926948",
+        "stop": "2015-02-19T14:05:15.110622"
+      }
+    ],
+    "reviewed": true
+  },
+  "3843": {
+    "loading_events": [
+      {
+        "start": "2015-02-22T08:11:39.852041",
+        "stop": "2015-02-22T08:13:42.845238"
+      }
+    ],
+    "reviewed": true
+  },
+  "3844": {
+    "loading_events": [
+      {
+        "start": "2015-02-22T16:23:37",
+        "stop": "2015-02-22T16:25:06.362245"
+      }
+    ],
+    "reviewed": true
+  },
+  "3917": {
+    "loading_events": [
+      {
+        "start": "2015-03-19T19:38:53.120207",
+        "stop": "2015-03-19T19:48:15.134354"
+      },
+      {
+        "start": "2015-03-19T19:51:39.638838",
+        "stop": "2015-03-19T19:54:49.962353"
+      }
+    ],
+    "reviewed": true
+  },
+  "3921": {
+    "loading_events": [
+      {
+        "start": "2015-03-21T05:00:53.551252",
+        "stop": "2015-03-21T05:03:34.599490"
+      }
+    ],
+    "reviewed": true
+  },
+  "3931": {
+    "loading_events": [
+      {
+        "start": "2015-03-24T15:46:46.897959",
+        "stop": "2015-03-24T15:53:20.294681"
+      },
+      {
+        "start": "2015-03-24T15:53:22.525664",
+        "stop": "2015-03-24T15:55:27.460730"
+      }
+    ],
+    "reviewed": true
+  },
+  "3934": {
+    "loading_events": [
+      {
+        "start": "2015-03-25T16:41:53.453850",
+        "stop": "2015-03-25T16:43:56.094156"
+      },
+      {
+        "start": "2015-03-25T17:08:09.195965",
+        "stop": "2015-03-25T17:09:04.941558"
+      }
+    ],
+    "reviewed": true
+  },
+  "3935": {
+    "loading_events": [
+      {
+        "start": "2015-03-26T01:03:20.639147",
+        "stop": "2015-03-26T01:04:54.291744"
+      },
+      {
+        "start": "2015-03-26T01:12:15.796846",
+        "stop": "2015-03-26T01:13:35.327226"
+      }
+    ],
+    "reviewed": true
+  },
+  "3936": {
+    "loading_events": [
+      {
+        "start": "2015-03-26T09:14:26.703618",
+        "stop": "2015-03-26T09:16:28.600650"
+      },
+      {
+        "start": "2015-03-26T09:19:12.121058",
+        "stop": "2015-03-26T09:20:49.490028"
+      },
+      {
+        "start": "2015-03-26T09:24:50.310993",
+        "stop": "2015-03-26T09:28:51.875232"
+      }
+    ],
+    "reviewed": true
+  },
+  "3937": {
+    "loading_events": [
+      {
+        "start": "2015-03-26T17:34:33.041280",
+        "stop": "2015-03-26T17:37:43.220624"
+      },
+      {
+        "start": "2015-03-26T17:41:58.774119",
+        "stop": "2015-03-26T17:43:07.119821"
+      }
+    ],
+    "reviewed": true
+  },
+  "3939": {
+    "loading_events": [
+      {
+        "start": "2015-03-27T10:10:44.928958",
+        "stop": "2015-03-27T10:14:38.074444"
+      }
+    ],
+    "reviewed": true
+  },
+  "3940": {
+    "loading_events": [
+      {
+        "start": "2015-03-27T18:30:37.653062",
+        "stop": "2015-03-27T18:32:37.133581"
+      },
+      {
+        "start": "2015-03-27T18:35:18.172542",
+        "stop": "2015-03-27T18:36:44.257885"
+      }
+    ],
+    "reviewed": true
+  },
+  "3941": {
+    "loading_events": [
+      {
+        "start": "2015-03-28T03:10:46.818182",
+        "stop": "2015-03-28T03:13:33.051948"
+      }
+    ],
+    "reviewed": true
+  },
+  "3945": {
+    "loading_events": [
+      {
+        "start": "2015-03-29T11:56:45.844156",
+        "stop": "2015-03-29T12:02:46.877706"
+      }
+    ],
+    "reviewed": true
+  },
+  "3946": {
+    "loading_events": [
+      {
+        "start": "2015-03-29T20:10:50.115260",
+        "stop": "2015-03-29T20:14:08.156772"
+      },
+      {
+        "start": "2015-03-29T20:17:49.933596",
+        "stop": "2015-03-29T20:22:20.664502"
+      },
+      {
+        "start": "2015-03-29T20:23:59.314394",
+        "stop": "2015-03-29T20:25:07.553417"
+      }
+    ],
+    "reviewed": true
+  },
+  "3949": {
+    "loading_events": [
+      {
+        "start": "2015-03-30T21:16:57.783859",
+        "stop": "2015-03-30T21:19:25.974953"
+      },
+      {
+        "start": "2015-03-30T21:14:37.002319",
+        "stop": "2015-03-30T21:16:20.736085"
+      }
+    ],
+    "reviewed": true
+  },
+  "3952": {
+    "loading_events": [
+      {
+        "start": "2015-03-31T22:05:53.304732",
+        "stop": "2015-03-31T22:08:40.760668"
+      }
+    ],
+    "reviewed": true
+  },
+  "3953": {
+    "loading_events": [
+      {
+        "start": "2015-04-01T06:19:02.493506",
+        "stop": "2015-04-01T06:23:36.504020"
+      }
+    ],
+    "reviewed": true
+  },
+  "3957": {
+    "loading_events": [
+      {
+        "start": "2015-04-02T15:34:13.321429",
+        "stop": "2015-04-02T15:40:53.551020"
+      }
+    ],
+    "reviewed": true
+  },
+  "3958": {
+    "loading_events": [
+      {
+        "start": "2015-04-02T23:43:12.372294",
+        "stop": "2015-04-02T23:48:08.909091"
+      }
+    ],
+    "reviewed": true
+  },
+  "3960": {
+    "loading_events": [
+      {
+        "start": "2015-04-03T16:27:27.870130",
+        "stop": "2015-04-03T16:29:14.623377"
+      }
+    ],
+    "reviewed": true
+  },
+  "3963": {
+    "loading_events": [
+      {
+        "start": "2015-04-04T17:24:52.899814",
+        "stop": "2015-04-04T17:26:40.998145"
+      },
+      {
+        "start": "2015-04-04T17:44:03.434756",
+        "stop": "2015-04-04T17:45:17.176252"
+      }
+    ],
+    "reviewed": true
+  },
+  "3964": {
+    "loading_events": [
+      {
+        "start": "2015-04-05T01:43:00.915816",
+        "stop": "2015-04-05T01:45:36.706632"
+      }
+    ],
+    "reviewed": true
+  },
+  "3965": {
+    "loading_events": [
+      {
+        "start": "2015-04-05T10:01:31.788265",
+        "stop": "2015-04-05T10:07:27.761904"
+      },
+      {
+        "start": "2015-04-05T10:10:23.654762",
+        "stop": "2015-04-05T10:12:30.967687"
+      }
+    ],
+    "reviewed": true
+  },
+  "3966": {
+    "loading_events": [
+      {
+        "start": "2015-04-05T18:14:56.104592",
+        "stop": "2015-04-05T18:18:33.039116"
+      },
+      {
+        "start": "2015-04-05T18:32:02.146258",
+        "stop": "2015-04-05T18:33:05.802721"
+      }
+    ],
+    "reviewed": true
+  },
+  "3967": {
+    "loading_events": [
+      {
+        "start": "2015-04-06T02:49:34.387755",
+        "stop": "2015-04-06T02:51:45.888605"
+      }
+    ],
+    "reviewed": true
+  },
+  "3968": {
+    "loading_events": [
+      {
+        "start": "2015-04-06T10:56:02.568955",
+        "stop": "2015-04-06T11:01:09.266543"
+      },
+      {
+        "start": "2015-04-06T11:02:25.521955",
+        "stop": "2015-04-06T11:05:21.495981"
+      }
+    ],
+    "reviewed": true
+  },
+  "3970": {
+    "loading_events": [
+      {
+        "start": "2015-04-07T03:32:53.281076",
+        "stop": "2015-04-07T03:38:47.416048"
+      },
+      {
+        "start": "2015-04-07T03:39:16.717996",
+        "stop": "2015-04-07T03:42:34.296846"
+      }
+    ],
+    "reviewed": true
+  },
+  "3980": {
+    "loading_events": [
+      {
+        "start": "2015-04-10T14:51:46.514842",
+        "stop": "2015-04-10T14:56:12.743970"
+      },
+      {
+        "start": "2015-04-10T15:21:28.073284",
+        "stop": "2015-04-10T15:22:14.119202"
+      }
+    ],
+    "reviewed": true
+  },
+  "3984": {
+    "loading_events": [
+      {
+        "start": "2015-04-12T00:42:01.664193",
+        "stop": "2015-04-12T00:42:52.709725"
+      }
+    ],
+    "reviewed": true
+  },
+  "3986": {
+    "loading_events": [
+      {
+        "start": "2015-04-12T17:09:26.855983",
+        "stop": "2015-04-12T17:11:22.336039"
+      }
+    ],
+    "reviewed": true
+  },
+  "3988": {
+    "loading_events": [
+      {
+        "start": "2015-04-13T09:41:53.136904",
+        "stop": "2015-04-13T09:48:13.049551"
+      },
+      {
+        "start": "2015-04-13T10:03:23.501005",
+        "stop": "2015-04-13T10:03:45.258117"
+      },
+      {
+        "start": "2015-04-13T10:03:57.810297",
+        "stop": "2015-04-13T10:04:41.324520"
+      }
+    ],
+    "reviewed": true
+  },
+  "3992": {
+    "loading_events": [
+      {
+        "start": "2015-04-14T18:59:13.971862",
+        "stop": "2015-04-14T19:09:29.581015"
+      },
+      {
+        "start": "2015-04-14T19:22:06.546074",
+        "stop": "2015-04-14T19:26:04.927335"
+      }
+    ],
+    "reviewed": true
+  },
+  "3996": {
+    "loading_events": [
+      {
+        "start": "2015-04-16T04:21:43.616883",
+        "stop": "2015-04-16T04:22:33.779221"
+      }
+    ],
+    "reviewed": true
+  },
+  "3997": {
+    "loading_events": [
+      {
+        "start": "2015-04-16T12:50:42.732142",
+        "stop": "2015-04-16T12:54:27.626623"
+      },
+      {
+        "start": "2015-04-16T13:08:49.582792",
+        "stop": "2015-04-16T13:10:33.251623"
+      }
+    ],
+    "reviewed": true
+  },
+  "4003": {
+    "loading_events": [
+      {
+        "start": "2015-04-18T15:12:12.928417",
+        "stop": "2015-04-18T15:14:23.229901"
+      }
+    ],
+    "reviewed": true
+  }
+}
