@@ -23,7 +23,10 @@ import json
 import KT17
 
 KERNEL_DIR  = os.path.expanduser("~/mercury_dipolarizations/messenger_kernels")
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    _SCRIPT_DIR = os.getcwd()
 _DI_CSV     = os.path.join(_SCRIPT_DIR, 'orb_num_start_ut_rhel_di.csv')
 
 # ---------------------------------------------------------------------------
@@ -923,8 +926,8 @@ def filter_orbit_segment(orb_df):
 
     criteria = (
         (orb_df['ephx'] < 0.0) &
-        (orb_df['ephz'] > -1.75) &
-        (orb_df['ephz'] < 1) &
+        (orb_df['ephz'] > -2) &
+        (orb_df['ephz'] < 1.25) &
         ((orb_df['ephx']**2 + orb_df['ephy']**2 + orb_df['ephz']**2) < 3**2)
     ).to_numpy()
 
@@ -1190,10 +1193,12 @@ def _plot_orbit_into_subfig(subfig, orb, label, fontsize=8,
         ax_fac.plot(t_obs, Bx_obs - Bx_mod, color='red',   lw=0.7, label=r'$\Delta B_x$')
         ax_fac.plot(t_obs, By_obs - By_mod, color='green',  lw=0.7, label=r'$\Delta B_y$')
         ax_fac.plot(t_obs, Bz_obs - Bz_mod, color='blue',   lw=0.7, label=r'$\Delta B_z$')
+        ax_fac.plot(t_obs, Bmag_obs - Bmag_mod, color='black', lw=0.7, label=r'$\Delta |B|$')
     else:  # 'fac'
         ax_fac.plot(t_obs, B_perp, color='red',   lw=0.7, label=r'$\Delta B_\perp$')
         ax_fac.plot(t_obs, B_phi,  color='green',  lw=0.7, label=r'$\Delta B_\phi$')
         ax_fac.plot(t_obs, B_para, color='blue',   lw=0.7, label=r'$\Delta B_\parallel$')
+        ax_fac.plot(t_obs, Bmag_obs - Bmag_mod, color='black', lw=0.7, label=r'$\Delta |B|$')
     ax_fac.axhline(y=0, color='black', lw=0.5)
     ax_fac.legend(loc='lower right', fontsize=fontsize)
     ax_fac.set_ylim(-75, 50)
@@ -3774,7 +3779,8 @@ def plot_event_locations(json_path=None, fig=None, orbit_labels=False,
 def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
                         human_DR=False, human_loading=True,
                         partition_differencing=False,
-                        partition_smooth_sec=30.0):
+                        partition_smooth_sec=30.0,
+                        scatter_mode=False):
     """
     Plot trajectory segments on a lat–lon map, coloured by ΔB_phi (azimuthal
     FAC component).
@@ -3824,6 +3830,8 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
     ax.set_facecolor('white')
     ax.axhline(0,   color='k', lw=0.5, alpha=0.4)
     ax.axvline(180, color='k', lw=0.5, alpha=0.3, ls='--')
+
+    scatter_lons, scatter_lats, scatter_vals, scatter_data = [], [], [], []
 
     for orb_str, entry in labels.items():
         if not isinstance(entry, dict):
@@ -3890,40 +3898,52 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
             lat = np.degrees(np.arcsin(np.clip(Zs / r, -1, 1)))
             lon = np.degrees(np.arctan2(Ys, Xs)) % 360
 
-            # ── partition differencing ────────────────────────────────────────
+            # ── partition: always compute when human_loading; apply differencing only if requested
             part_lon = part_lat = part_idx = None
-            if partition_differencing and human_loading:
+            bp_plot = bp.astype(float)
+            if human_loading:
                 t_part = partition_loading_event(
                     t0, t1, t_obs, dBx_full,
                     smooth_sec=partition_smooth_sec,
                 )
                 if t_part is not None:
-                    t_part_ns  = pd.Timestamp(t_part).value   # int64 ns since epoch
-                    t_obs_ns   = t_obs_seg.astype('datetime64[ns]').astype('int64')
-                    load_seg   = t_obs_ns <= t_part_ns
-                    unload_seg = ~load_seg
-
-                    Bphi_0  = float(bp[load_seg].mean()) if load_seg.any() else 0.0
-                    bp_plot = bp.copy().astype(float)
-                    bp_plot[load_seg]   = 0.0
-                    bp_plot[unload_seg] = bp[unload_seg] - Bphi_0
-
-                    part_idx = int(np.argmin(np.abs(t_obs_ns - t_part_ns)))
+                    t_part_ns = pd.Timestamp(t_part).value
+                    t_obs_ns  = t_obs_seg.astype('datetime64[ns]').astype('int64')
+                    part_idx  = int(np.argmin(np.abs(t_obs_ns - t_part_ns)))
                     part_lon, part_lat = lon[part_idx], lat[part_idx]
-                else:
-                    bp_plot = bp.astype(float)
+
+                    if partition_differencing:
+                        unload_seg = t_obs_ns > t_part_ns
+                        Bphi_0  = float(bp[part_idx])
+                        bp_plot[unload_seg] = bp[unload_seg] - Bphi_0
+
+            if scatter_mode:
+                # one scatter point per event; use unloading segment when
+                # partition_differencing, otherwise use the full interval
+                seg_start = part_idx if (partition_differencing and part_idx is not None) else 0
+                s_lon = lon[seg_start:];  s_lat = lat[seg_start:]
+                s_bp  = bp_plot[seg_start:]
+                s_X   = Xs[seg_start:];   s_Y = Ys[seg_start:];  s_Z = Zs[seg_start:]
+                if len(s_lon) >= 1:
+                    mean_dbphi = float(np.mean(s_bp))
+                    scatter_lons.append(float(np.mean(s_lon)))
+                    scatter_lats.append(float(np.mean(s_lat)))
+                    scatter_vals.append(mean_dbphi)
+                    scatter_data.append([float(np.mean(s_X)),
+                                         float(np.mean(s_Y)),
+                                         float(np.mean(s_Z)),
+                                         mean_dbphi])
             else:
-                bp_plot = bp.astype(float)
-
-            # build line segments for LineCollection
-            pts  = np.column_stack([lon, lat])
-            segs = np.stack([pts[:-1], pts[1:]], axis=1)
-            vals = 0.5 * (bp_plot[:-1] + bp_plot[1:])
-
-            lc = LineCollection(segs, cmap=cmap, norm=norm, lw=3.0,
-                                 alpha=0.9, zorder=3)
-            lc.set_array(vals)
-            ax.add_collection(lc)
+                # coloured LineCollection; unloading segment only if partition_differencing
+                lc_start = part_idx if (partition_differencing and part_idx is not None) else 0
+                lon_lc = lon[lc_start:]; lat_lc = lat[lc_start:]; bp_lc = bp_plot[lc_start:]
+                pts  = np.column_stack([lon_lc, lat_lc])
+                segs = np.stack([pts[:-1], pts[1:]], axis=1)
+                vals = 0.5 * (bp_lc[:-1] + bp_lc[1:])
+                lc = LineCollection(segs, cmap=cmap, norm=norm, lw=3.0,
+                                     alpha=0.9, zorder=3)
+                lc.set_array(vals)
+                ax.add_collection(lc)
 
             if orbit_labels:
                 mid = len(lon) // 2
@@ -3932,7 +3952,7 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
                         color='k', zorder=5, clip_on=True)
 
             # partition tick mark (perpendicular to track, dark green)
-            if part_lon is not None:
+            if part_lon is not None and not partition_differencing:
                 i0 = max(part_idx - 1, 0)
                 i1 = min(part_idx + 1, len(lon) - 1)
                 dlon = lon[i1] - lon[i0]; dlat = lat[i1] - lat[i0]
@@ -3970,7 +3990,7 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
 
             # filled arrowhead just past the segment end, offset by one arrow
             # width along the direction of motion so it doesn't overlap the track
-            if len(lon) >= 2:
+            if len(lon) >= 2 and not partition_differencing:
                 dlon_dir = lon[-1] - lon[-2]
                 dlat_dir = lat[-1] - lat[-2]
                 mag_dir  = np.sqrt(dlon_dir**2 + dlat_dir**2)
@@ -3986,7 +4006,13 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
                                             fc='black', lw=0.8, mutation_scale=7),
                             zorder=8)
 
+    if scatter_lons:
+        ax.scatter(scatter_lons, scatter_lats,
+                   c=scatter_vals, cmap=cmap, norm=norm,
+                   s=60, zorder=4, edgecolors='k', linewidths=0.4)
+
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+
     sm.set_array([])
     cb = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink = 0.5)
     _phi_label = r'$\Delta B_\phi$' if partition_differencing else r'$B_\phi$'
@@ -4017,6 +4043,159 @@ def plot_Bphi_locations(json_path=None, clim=(-20, 20), orbit_labels=False,
     out_path = os.path.join(out_dir, f'{tag}_bphi_locations.png')
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f"Saved → {out_path}")
+
+    if scatter_mode:
+        return fig, np.array(scatter_data)   # (N, 4): X, Y, Z, mean_ΔBphi
+    return fig
+
+def plot_quick_look(t0, t1, species=('H+',), figsize=(14, 5), smooth_sec=10):
+    """
+    Plot Bx, By, Bz and optional FIPS ion spectrograms for an arbitrary time
+    range, bypassing filter_orbit_segment so any interval is valid.
+
+    Parameters
+    ----------
+    t0, t1      : anything pd.Timestamp accepts  (string, datetime, Timestamp)
+    species     : tuple of FIPS species to append as spectrogram rows, e.g.
+                  ('H+',) or ('H+', 'He++').  Pass () for mag-only.
+    figsize     : figure width, height in inches (height is auto-scaled with rows)
+    smooth_sec  : rolling-mean smoothing window applied to mag data in seconds.
+                  Pass 0 or None to plot raw data.
+
+    Returns
+    -------
+    matplotlib Figure
+    """
+    from matplotlib.colors import LogNorm
+
+    t0 = pd.Timestamp(t0)
+    t1 = pd.Timestamp(t1)
+
+    # ── magnetometer ─────────────────────────────────────────────────────────
+    df   = load_bowers_data_pkl(trange=[t0, t1])
+    t    = pd.to_datetime(df['time'])
+
+    # optional boxcar smoothing
+    dt_s = float(np.median(np.diff((t - t.iloc[0]).dt.total_seconds().to_numpy()))) if len(t) > 1 else 1.0
+    win  = int(round(smooth_sec / dt_s)) if smooth_sec else 1
+
+    if win > 1:
+        kernel = np.ones(win) / win
+        def _boxcar(arr):
+            pad = win // 2
+            return np.convolve(np.pad(arr.astype(float), pad, mode='reflect'),
+                               kernel, mode='valid')[:len(arr)]
+        Bx = _boxcar(df['magx'].to_numpy())
+        By = _boxcar(df['magy'].to_numpy())
+        Bz = _boxcar(df['magz'].to_numpy())
+    else:
+        Bx, By, Bz = df['magx'].to_numpy(), df['magy'].to_numpy(), df['magz'].to_numpy()
+
+    n_fips = len(species)
+    _region_colors = {
+        1: '#4477AA',   # blue   – Magnetosphere
+        2: '#66CCEE',   # cyan   – Magnetosheath
+        3: '#CCBB44',   # yellow – Solar Wind
+        4: '#EE6677',   # red    – Bow Shock
+        5: '#AA3377',   # purple – Magnetopause
+    }
+    _region_labels = {1: 'MS', 2: 'MSH', 3: 'SW', 4: 'BS', 5: 'MP'}
+    has_region = 'Type_num' in df.columns
+
+    # rows: mag | region bar | FIPS...
+    nrows     = 1 + int(has_region) + n_fips
+    h_ratios  = [3] + ([0.12] if has_region else []) + [1] * n_fips
+    fig, axes = plt.subplots(nrows, 1, sharex=True,
+                             figsize=(figsize[0], figsize[1] + n_fips * 1.5),
+                             gridspec_kw={'hspace': 0.05, 'height_ratios': h_ratios})
+    axes = list(np.atleast_1d(axes))
+
+    ax_mag = axes[0]
+    ax_mag.plot(t, Bx, color='red',   lw=0.7, label='Bx')
+    ax_mag.plot(t, By, color='green',  lw=0.7, label='By')
+    ax_mag.plot(t, Bz, color='blue',   lw=0.7, label='Bz')
+    ax_mag.axhline(0, color='k', lw=0.4, alpha=0.4)
+    ax_mag.set_ylabel('B (nT)')
+    ax_mag.legend(loc='upper right', fontsize=8)
+    ax_mag.grid(True, alpha=0.3)
+    ax_mag.set_ylim(-50, 50)
+
+    # ── region colour bar (Type_num) ──────────────────────────────────────────
+    if has_region:
+        from matplotlib.patches import Patch
+        ax_bar   = axes[1]
+        type_arr = df['Type_num'].to_numpy()
+        t_arr    = t.to_numpy().astype('datetime64[ns]').astype('int64')
+        dt_h     = (t_arr[1] - t_arr[0]) // 2 if len(t_arr) > 1 else int(5e8)
+        edges          = np.empty(len(t_arr) + 1, dtype='int64')
+        edges[0]       = t_arr[0]  - dt_h
+        edges[-1]      = t_arr[-1] + dt_h
+        edges[1:-1]    = (t_arr[:-1] + t_arr[1:]) // 2
+        t_edges        = edges.astype('datetime64[ns]')
+        for k in range(len(type_arr)):
+            rtype = int(type_arr[k]) if np.isfinite(type_arr[k]) else 0
+            ax_bar.axvspan(t_edges[k], t_edges[k + 1],
+                           color=_region_colors.get(rtype, 'lightgrey'), lw=0)
+        ax_bar.set_ylim(0, 1)
+        ax_bar.set_yticks([])
+        ax_bar.tick_params(left=False, bottom=False)
+        for spine in ax_bar.spines.values():
+            spine.set_visible(False)
+        seen    = sorted(set(int(v) for v in type_arr if np.isfinite(v)))
+        handles = [Patch(facecolor=_region_colors.get(r, 'lightgrey'),
+                         label=_region_labels.get(r, str(r))) for r in seen]
+        ax_bar.legend(handles=handles, loc='center left', fontsize=6,
+                      ncol=len(handles), framealpha=0.0,
+                      borderpad=0.2, handlelength=1, handleheight=0.8)
+
+    # ── FIPS spectrograms ─────────────────────────────────────────────────────
+    if species:
+        try:
+            fips_path = _fips_espec_path_for_date(t0)
+            fips      = load_fips_espec_tab(fips_path)
+            t_fips    = fips['t'].astype('datetime64[ns]')
+            t0_ns     = np.datetime64(t0, 'ns')
+            t1_ns     = np.datetime64(t1, 'ns')
+            fmask     = (t_fips >= t0_ns) & (t_fips <= t1_ns)
+            t_edges   = _fips_time_edges(t_fips[fmask].astype('int64'))
+
+            fips_cmap = plt.cm.nipy_spectral.copy()
+            fips_cmap.set_under('black')
+
+            fips_axes = axes[1 + int(has_region):]
+            for ax_f, sp in zip(fips_axes, species):
+                if sp not in fips or not fmask.any():
+                    ax_f.text(0.5, 0.5, f'No FIPS data ({sp})',
+                              ha='center', va='center', transform=ax_f.transAxes)
+                    continue
+                flux    = fips[f'{sp}_flux'][fmask]
+                energy  = fips[f'{sp}_energy']
+                e_edges = _fips_bin_edges(energy)
+                T, E    = np.meshgrid(t_edges, e_edges)
+                ax_f.pcolormesh(T, E, flux.T,
+                                cmap=fips_cmap,
+                                norm=LogNorm(vmin=np.nanpercentile(flux[flux > 0], 5)
+                                             if (flux > 0).any() else 1e-3),
+                                shading='flat')
+                ax_f.set_yscale('log')
+                ax_f.set_ylabel(f'{sp}\nE (keV)', fontsize=8)
+                ax_f.grid(True, alpha=0.2, color='white', lw=0.4)
+
+        except Exception as e:
+            axes[1 + int(has_region)].text(
+                0.5, 0.5, f'FIPS unavailable: {e}',
+                ha='center', va='center',
+                transform=axes[1 + int(has_region)].transAxes, fontsize=7)
+
+    axes[-1].set_xlabel('UTC')
+    plt.setp(axes[-1].get_xticklabels(), rotation=30, ha='right')
+
+    smooth_str = f'  |  {smooth_sec}s smooth' if win > 1 else '  |  raw'
+    fig.suptitle(f'{t0.strftime("%Y-%m-%d %H:%M")} – {t1.strftime("%H:%M")} UTC{smooth_str}',
+                 fontsize=10)
+    plt.tight_layout()
+
+    plt.show()
 
     return fig
 
@@ -4419,7 +4598,7 @@ def plot_fips_for_orbit(orb, species=None, save=True):
 #plot_event_locations(orbit_labels=True, human_DR=True)
 
 # Plot their azimuthal field
-#plot_Bphi_locations(clim=(-10, 10), human_DR=True)
+#plot_Bphi_locations(clim=(-10, 10), human_loading=True)
 
 # Plot chosen orbit examples
 #_fips_species = ['H+', 'He++']   # set to None to skip FIPS panels
@@ -4461,16 +4640,13 @@ def plot_fips_for_orbit(orb, species=None, save=True):
 # Swap to investigating loading times
 
 # Label loading events
-#event_filtering_toolkit_loading(2493,2578, species=['H+'], auto_review_page=True)
+event_filtering_toolkit_loading(915, 1014, species=['H+'], auto_review_page=True)
 
 # Show all labeled loading events
 #event_filtering_toolkit_v1(human_loading=True)
 
 # Show their locations
 #plot_event_locations(orbit_labels=True, human_loading=True, human_DR=False)
-
-# Show B_phi
-#plot_Bphi_locations(clim=(-30, 30), human_loading=True, human_DR=False)
 
 # Highlight a chosen subset of events
 def plot_nice_examples(orbits=None, fips_species=['H+'],
@@ -4541,3 +4717,295 @@ def plot_nice_examples(orbits=None, fips_species=['H+'],
         fig.savefig(out, dpi=dpi, bbox_inches='tight')
         plt.close()
         print(f'  Saved → {out}')
+
+'''
+# Show B_phi
+fig, array = plot_Bphi_locations(partition_differencing = True,clim=(-5,5), scatter_mode=True)
+
+# Show unload Bphi in other coordinate systems 
+SCW_middle = 0 # y coord of where the delta B_phi signals swap
+clim = [-5, 5]
+rho_lim = [0.5,3]
+x_lim = [-0.5,-3]
+y_lim = [-2,2]
+z_lim = [-1.5,1]
+
+# Calculate ranges to determine width ratios
+width_1_2 = abs(rho_lim[1] - rho_lim[0])
+width_3 = abs(y_lim[1] - y_lim[0])      
+
+# Pass these ratios to the subplots call
+fig, axs = plt.subplots(
+    figsize=(18, 5), 
+    ncols=3, 
+    constrained_layout=True,
+    gridspec_kw={'width_ratios': [width_1_2, width_1_2, width_3]}
+)
+
+rho = np.sqrt(array[:,0]**2+array[:,1]**2) # Axial distance
+x = array[:,0]
+
+dusk_mask = array[:,1] >= SCW_middle
+dawn_mask = array[:,1] < SCW_middle
+
+for axi, mask in enumerate([dusk_mask,dawn_mask]):
+    sc = axs[axi].scatter(rho[mask], array[:,2][mask], c=array[:,3][mask], cmap='RdBu_r', vmin=clim[0], vmax=clim[1], edgecolors='none', alpha=0.8)
+    #sc = axs[axi].scatter(x[mask], array[:,2][mask], c=array[:,3][mask], cmap='RdBu_r', vmin=clim[0], vmax=clim[1], edgecolors='none', alpha=0.8)
+
+    axs[axi].add_patch(plt.Circle((0, -0.2), 1.0, color='saddlebrown', alpha=0.6, zorder=5))
+    axs[axi].axhline(y=0,color='k',linestyle='dashed')
+
+    axs[axi].set_xlabel(r"Axial distance [$R_M$]")
+    #axs[axi].set_xlabel(r"X [$R_M$]")
+
+# Show YZ
+sc = axs[2].scatter(array[:,1], array[:,2], c=array[:,3], cmap='RdBu_r', vmin=clim[0], vmax=clim[1], edgecolors='none', alpha=0.8)
+
+axs[0].set_xlim(*rho_lim)
+#axs[0].set_xlim(*x_lim)
+axs[0].set_title(f"Pre-midnight (y<{SCW_middle})")
+
+axs[1].set_xlim(rho_lim[1],rho_lim[0])
+#axs[1].set_xlim(x_lim[1],x_lim[0])
+axs[1].set_title(f"Post-midnight (y>{SCW_middle})")
+
+axs[2].set_xlabel(r"Y [$R_M$]")
+axs[2].set_xlim(y_lim[1],y_lim[0])
+axs[2].set_title("All unloading events")
+
+for ax in axs.ravel():
+    ax.set_ylabel(r"Z [$R_M$]")
+    ax.grid()
+    ax.set_ylim(*z_lim)
+    ax.set_aspect(1)
+
+cbar = fig.colorbar(sc, ax=axs, location='right', shrink=0.7, label=r'$\Delta B_\phi$ [nT]')
+
+plt.savefig("myfig.png",dpi=300)
+plt.show()
+plt.close()
+'''
+
+
+# New method: Using the loading time as the background field to difference from
+
+def plot_Bphi_field_baseline(json_path=None, clim=(-5, 5),
+                              scatter_mode=True,
+                              partition_smooth_sec=30.0,
+                              orbit_labels=False):
+    """
+    Like plot_Bphi_locations(partition_differencing=True) but uses the mean
+    *observed* field during the loading phase to define a fixed FAC coordinate
+    system for each event, rather than the instantaneous model-field basis.
+
+    For each loading event:
+      1. Partition into loading [t_start, t_part] and unloading [t_part, t_stop].
+      2. Mean observed B during loading → b_hat_0 (baseline field direction).
+      3. Mean spacecraft position during loading + b_hat_0 → fixed phi_hat_0.
+      4. Project both phases onto phi_hat_0; baseline = mean loading projection.
+      5. delta_B_phi = B_phi_fixed_unloading − baseline.
+
+    Returns (fig, array) where array columns are [X, Y, Z, delta_B_phi]
+    averaged over each event's unloading segment.
+    """
+    from matplotlib.collections import LineCollection
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels.json')
+
+    with open(json_path) as f:
+        labels = json.load(f)
+
+    cmap = cm.RdBu_r
+    norm = mcolors.Normalize(vmin=clim[0], vmax=clim[1])
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    ax.set_facecolor('white')
+    ax.axhline(0,   color='k', lw=0.5, alpha=0.4)
+    ax.axvline(180, color='k', lw=0.5, alpha=0.3, ls='--')
+
+    scatter_lons, scatter_lats, scatter_vals, scatter_data = [], [], [], []
+
+    for orb_str, entry in labels.items():
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get('reviewed') or not entry.get('loading_events'):
+            continue
+
+        orb = int(orb_str)
+        try:
+            orb_df = load_bowers_data_pkl(orbit_number=orb)
+            orb_df = filter_orbit_segment(orb_df)
+        except Exception:
+            continue
+        if orb_df is None or orb_df.empty:
+            continue
+
+        _, _, dbg = _apply_dr_filter(orb_df)
+        t_obs = dbg['t_obs']
+        Bx    = dbg['Bx'];  By = dbg['By'];  Bz = dbg['Bz']
+        X_orb = orb_df['ephx'].to_numpy()
+        Y_orb = orb_df['ephy'].to_numpy()
+        Z_orb = orb_df['ephz'].to_numpy()
+        dBx_full = Bx - dbg['Bxm']
+
+        for ev in entry.get('loading_events', []):
+            t0 = pd.Timestamp(ev['start'])
+            t1 = pd.Timestamp(ev['stop'])
+
+            t_part = partition_loading_event(t0, t1, t_obs, dBx_full,
+                                             smooth_sec=partition_smooth_sec)
+            if t_part is None:
+                continue
+            t_part_ts = pd.Timestamp(t_part)
+
+            load_mask   = ((t_obs >= t0)       & (t_obs <= t_part_ts)).to_numpy()
+            unload_mask = ((t_obs > t_part_ts) & (t_obs <= t1)).to_numpy()
+
+            if load_mask.sum() < 2 or unload_mask.sum() < 1:
+                continue
+
+            # 1. Mean observed B during loading → baseline field direction
+            B_load_mean = np.array([Bx[load_mask].mean(),
+                                    By[load_mask].mean(),
+                                    Bz[load_mask].mean()])
+            B_load_norm = np.linalg.norm(B_load_mean)
+            if B_load_norm < 1e-6:
+                continue
+            b_hat_0 = B_load_mean / B_load_norm
+
+            # 2. Mean position during loading → fixed phi_hat
+            R_mean = np.array([X_orb[load_mask].mean(),
+                               Y_orb[load_mask].mean(),
+                               Z_orb[load_mask].mean()])
+            phi_vec  = np.cross(b_hat_0, R_mean)
+            phi_norm = np.linalg.norm(phi_vec)
+            if phi_norm < 1e-6:
+                continue
+            phi_hat_0 = phi_vec / phi_norm
+
+            # 3. Project loading phase onto fixed phi_hat → baseline value
+            B_load_stack    = np.column_stack([Bx[load_mask], By[load_mask], Bz[load_mask]])
+            B_phi_baseline  = float((B_load_stack @ phi_hat_0).mean())
+
+            # 4. Project unloading phase onto fixed phi_hat → delta
+            B_unload_stack = np.column_stack([Bx[unload_mask], By[unload_mask], Bz[unload_mask]])
+            dB_phi         = B_unload_stack @ phi_hat_0 - B_phi_baseline
+
+            Xs = X_orb[unload_mask];  Ys = Y_orb[unload_mask];  Zs = Z_orb[unload_mask]
+            r   = np.sqrt(Xs**2 + Ys**2 + Zs**2)
+            lat = np.degrees(np.arcsin(np.clip(Zs / r, -1, 1)))
+            lon = np.degrees(np.arctan2(Ys, Xs)) % 360
+
+            if scatter_mode:
+                mean_dbphi = float(np.mean(dB_phi))
+                scatter_lons.append(float(np.mean(lon)))
+                scatter_lats.append(float(np.mean(lat)))
+                scatter_vals.append(mean_dbphi)
+                scatter_data.append([float(np.mean(Xs)),
+                                     float(np.mean(Ys)),
+                                     float(np.mean(Zs)),
+                                     mean_dbphi])
+            else:
+                pts  = np.column_stack([lon, lat])
+                segs = np.stack([pts[:-1], pts[1:]], axis=1)
+                vals = 0.5 * (dB_phi[:-1] + dB_phi[1:])
+                lc   = LineCollection(segs, cmap=cmap, norm=norm, lw=3.0,
+                                      alpha=0.9, zorder=3)
+                lc.set_array(vals)
+                ax.add_collection(lc)
+
+            if orbit_labels:
+                mid = len(lon) // 2
+                ax.text(lon[mid], lat[mid], str(orb), fontsize=5,
+                        ha='center', va='bottom', color='k', zorder=5, clip_on=True)
+
+    if scatter_lons:
+        ax.scatter(scatter_lons, scatter_lats,
+                   c=scatter_vals, cmap=cmap, norm=norm,
+                   s=60, zorder=4, edgecolors='k', linewidths=0.4)
+
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink=0.5)
+    cb.set_label(r'$\Delta B_\phi$ [nT]')
+
+    lon_min, lon_max = 90, 270
+    lat_min, lat_max = -65, 65
+    ax.set_xlabel('East longitude (°)')
+    ax.set_ylabel('MLat (°)')
+    ax.set_aspect(1)
+    ax.set_xticks([t for t in range(0, 361, 45) if lon_min <= t <= lon_max])
+    ax.set_yticks([t for t in range(-90, 91, 30) if lat_min <= t <= lat_max])
+    ax.grid(True, alpha=0.25)
+    ax.set_title(r'$\Delta B_\phi$: unloading phase projected into loading-phase FAC')
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    plt.tight_layout()
+
+    array_out = np.array(scatter_data) if scatter_data else np.empty((0, 4))
+    return fig, array_out
+
+'''
+# Show delta-B_phi using loading-phase field as baseline coordinate system
+fig, array = plot_Bphi_field_baseline(clim=(-5, 5), scatter_mode=True)
+
+SCW_middle = 0
+clim = [-5, 5]
+rho_lim = [0.5, 3]
+y_lim   = [-2, 2]
+z_lim   = [-1.5, 1]
+
+width_1_2 = abs(rho_lim[1] - rho_lim[0])
+width_3   = abs(y_lim[1]   - y_lim[0])
+
+fig2, axs = plt.subplots(
+    figsize=(18, 5),
+    ncols=3,
+    constrained_layout=True,
+    gridspec_kw={'width_ratios': [width_1_2, width_1_2, width_3]}
+)
+
+rho = np.sqrt(array[:, 0]**2 + array[:, 1]**2)
+
+dusk_mask = array[:, 1] >= SCW_middle
+dawn_mask = array[:, 1] <  SCW_middle
+
+for axi, mask in enumerate([dusk_mask, dawn_mask]):
+    sc = axs[axi].scatter(rho[mask], array[mask, 2], c=array[mask, 3],
+                          cmap='RdBu_r', vmin=clim[0], vmax=clim[1],
+                          edgecolors='none', alpha=0.8)
+    axs[axi].add_patch(plt.Circle((0, -0.2), 1.0, color='saddlebrown', alpha=0.6, zorder=5))
+    axs[axi].axhline(y=0, color='k', linestyle='dashed')
+    axs[axi].set_xlabel(r"Axial distance [$R_M$]")
+
+sc = axs[2].scatter(array[:, 1], array[:, 2], c=array[:, 3],
+                    cmap='RdBu_r', vmin=clim[0], vmax=clim[1],
+                    edgecolors='none', alpha=0.8)
+
+axs[0].set_xlim(*rho_lim)
+axs[0].set_title(f"Pre-midnight (y<{SCW_middle})")
+
+axs[1].set_xlim(rho_lim[1], rho_lim[0])
+axs[1].set_title(f"Post-midnight (y>{SCW_middle})")
+
+axs[2].set_xlabel(r"Y [$R_M$]")
+axs[2].set_xlim(y_lim[1], y_lim[0])
+axs[2].set_title("All unloading events")
+
+for ax in axs.ravel():
+    ax.set_ylabel(r"Z [$R_M$]")
+    ax.grid()
+    ax.set_ylim(*z_lim)
+    ax.set_aspect(1)
+
+cbar = fig2.colorbar(sc, ax=axs, location='right', shrink=0.7,
+                     label=r'$\Delta B_\phi$ [nT]')
+
+plt.savefig("myfig.png", dpi=300)
+plt.show()
+plt.close()
+
+'''

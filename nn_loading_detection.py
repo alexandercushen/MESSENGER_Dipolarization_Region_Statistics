@@ -37,30 +37,39 @@ LOADING_LABELS_JSON = os.path.join(_DIR, 'human_loading_labels.json')
 DATASET_NPZ         = os.path.join(_DIR, 'nn_dataset.npz')
 
 # ── defaults (all overridable via CLI) ────────────────────────────────────────
-DEFAULT_WINDOW_SEC = 2*60   # length of each example window in seconds
-DEFAULT_STEP_SEC   = 1    # stride between consecutive window starts
-DEFAULT_SAMPLE_HZ  = 0.1     # cadence after resampling (samples per second)
+DEFAULT_WINDOW_SEC = 600   # length of each example window in seconds
+DEFAULT_STEP_SEC   = 10   # stride between window starts in real seconds
+DEFAULT_SAMPLE_HZ  = 0.5     # cadence after resampling (samples per second)
+DEFAULT_LABEL_SEC  = 5   # center region whose loading-overlap fraction is the label
+                          # (set equal to window_sec to label the whole window)
 
 # ── editable hyperparameters ──────────────────────────────────────────────────
-BATCH_SIZE    = 12
+BATCH_SIZE    = 128
 N_EPOCHS      = 32
 TRAIN_RATIO   = 0.75    # fraction of orbits used for training (rest = validation)
-LEARNING_RATE = 8e-4
-CNN_WIDTH     = 6     # number of filters in each conv layer / nodes in dense layer
-DROPOUT       = 0.3     # dropout probability after each conv ReLU and dense ReLU
-WEIGHT_DECAY  = 1e-4    # L2 regularisation coefficient for Adam
+LEARNING_RATE = 1e-4
+CNN_WIDTH     = 12     # number of filters in each conv layer / nodes in dense layer
+DROPOUT       = 0.4     # dropout probability after each conv ReLU and dense ReLU
+WEIGHT_DECAY  = 1e-3    # L2 regularisation coefficient for Adam
 NOISE_SIGMA   = 0.05    # std of Gaussian noise added to augmented copies (normalised units)
-NOISE_COPIES  = 1       # number of noisy duplicates per training window (0 = no augmentation)
+NOISE_COPIES  = 2       # number of noisy duplicates per training window (0 = no augmentation)
 PLOT_INTERVAL = 1       # show example diagnostic plot every N epochs (0 = never)
+NEG_FRAC      = 0.95    # target negative fraction after balancing
+NORTH_ONLY    = True    # if True, zero out labels for windows where spacecraft Z_MSM < 0
+EARLY_STOP_PATIENCE = 12    # stop if val BCE does not improve for this many epochs (0 = disabled)
+LR_PATIENCE         = 2    # halve LR if val BCE does not improve for this many epochs
+LR_FACTOR           = 0.5  # multiplicative factor for ReduceLROnPlateau
 
 # ── hyperparameter sweep grid (edit these lists, then run --sweep) ─────────────
 #SWEEP_WINDOW_SEC = [60, 90, 120, 150, 180]   # window lengths to try (seconds)
 #SWEEP_SAMPLE_HZ  = [0.1, 0.2, 1]       # resample rates to try (Hz)
 #SWEEP_CNN_WIDTH  = [4, 8, 16, 24]      # CNN filter widths to try
 
-SWEEP_WINDOW_SEC = [90, 600]   # window lengths to try (seconds)
-SWEEP_SAMPLE_HZ  = [0.1, 1]       # resample rates to try (Hz)
-SWEEP_CNN_WIDTH  = [4, 24]      # CNN filter widths to try
+SWEEP_WINDOW_SEC = [600]        # window lengths to try (seconds)
+SWEEP_SAMPLE_HZ  = [0.5]             # resample rates to try (Hz)
+SWEEP_CNN_WIDTH  = [16,32]              # CNN filter widths to try
+SWEEP_LABEL_SEC  = [5]            # center label region lengths to try (seconds)
+SWEEP_NEG_FRAC   = [0.75,0.9]            # target negative fraction to try
 
 # ── per-orbit processing ──────────────────────────────────────────────────────
 
@@ -79,7 +88,9 @@ def _loading_mask(t_s: np.ndarray, loading_events: list) -> np.ndarray:
 
 def process_orbit(orb: int, loading_events: list,
                   window_sec: int, step_sec: int,
-                  sample_hz: float) -> dict | None:
+                  sample_hz: float,
+                  label_sec: float = DEFAULT_LABEL_SEC,
+                  north_only: bool = False) -> dict | None:
     """
     Load one orbit, resample to a uniform grid, slide a window over it, and
     return all (window, label) pairs.
@@ -158,6 +169,7 @@ def process_orbit(orb: int, loading_events: list,
     dBx_u,   t_uniform = _lowpass_interp(dBx)
     dBz_u,   _         = _lowpass_interp(dBz)
     dBmag_u, _         = _lowpass_interp(dBmag)
+    z_msm_u, _         = _lowpass_interp(orb_df['ephz'].to_numpy(dtype='float64'))
     n_samples           = len(t_uniform)
 
     # NaN mask on the uniform grid: True where KT17 was unavailable
@@ -169,8 +181,8 @@ def process_orbit(orb: int, loading_events: list,
     t_ns_u = (t0_ns + (t_uniform * 1e9).astype('int64'))
 
     # ── sliding window ────────────────────────────────────────────────────────
-    W      = max(1, int(window_sec * sample_hz))   # samples per window
-    stride = max(1, int(step_sec   * sample_hz))   # samples per step
+    W      = max(1, round(window_sec * sample_hz))   # samples per window
+    stride = max(1, round(step_sec  * sample_hz))   # samples per step (step_sec is real seconds)
 
     if n_samples < W:
         return None   # orbit too short for even one window
@@ -191,13 +203,20 @@ def process_orbit(orb: int, loading_events: list,
                         dBz_u[start:end],
                         dBmag_u[start:end]], axis=0)   # (3, W)
 
-        # score = fraction of the window occupied by loading
-        # sum overlaps across all events, cap at 1
-        win_dur  = win_s1 - win_s0
+        # score = fraction of the CENTER label_sec region occupied by loading
+        win_mid   = 0.5 * (win_s0 + win_s1)
+        half_lbl  = 0.5 * min(label_sec, win_s1 - win_s0)
+        lbl_s0    = win_mid - half_lbl
+        lbl_s1    = win_mid + half_lbl
+        lbl_dur   = lbl_s1 - lbl_s0
         total_overlap = 0.0
-        for ev_s0, ev_s1, ev_dur in ev_intervals:
-            total_overlap += max(0.0, min(win_s1, ev_s1) - max(win_s0, ev_s0))
-        lbl = min(total_overlap / win_dur, 1.0) if win_dur > 0 else 0.0
+        for ev_s0, ev_s1, _ev_dur in ev_intervals:
+            total_overlap += max(0.0, min(lbl_s1, ev_s1) - max(lbl_s0, ev_s0))
+        lbl = min(total_overlap / lbl_dur, 1.0) if lbl_dur > 0 else 0.0
+
+        # skip southern hemisphere windows entirely if north_only is set
+        if north_only and z_msm_u[start + W // 2] < 0:
+            continue
 
         windows.append(win)
         labels.append(lbl)
@@ -212,20 +231,27 @@ def process_orbit(orb: int, loading_events: list,
 
 # ── dataset assembly ──────────────────────────────────────────────────────────
 
-def build_dataset(labels_path:  str   = LOADING_LABELS_JSON,
-                  out_path:     str   = DATASET_NPZ,
-                  window_sec:   int   = DEFAULT_WINDOW_SEC,
-                  step_sec:     int   = DEFAULT_STEP_SEC,
-                  sample_hz:    float = DEFAULT_SAMPLE_HZ) -> None:
+def build_dataset(labels_path:    str   = LOADING_LABELS_JSON,
+                  out_path:       str   = DATASET_NPZ,
+                  window_sec:     int   = DEFAULT_WINDOW_SEC,
+                  step_sec:       int   = DEFAULT_STEP_SEC,
+                  sample_hz:      float = DEFAULT_SAMPLE_HZ,
+                  label_sec:      float = DEFAULT_LABEL_SEC,
+                  neg_frac:       float = NEG_FRAC,
+                  north_only:     bool  = NORTH_ONLY) -> None:
     """
     Build the full sliding-window dataset and save to a .npz archive.
 
-    Only orbits with ≥1 loading event are included.
+    All reviewed orbits are included — both those with loading events and
+    confirmed-negative passes (loading_events: []).  After generating all
+    windows the negative class is downsampled so that negatives make up
+    ``neg_frac`` of the final dataset (default 0.95, i.e. ~5 % positive),
+    reflecting the true occurrence rate.
 
     Saved arrays
     ------------
     windows  : float32 (N, 2, W)  — N examples, 2 channels, W time-steps
-    labels   : int8    (N,)        — 0 = background, 1 = loading
+    labels   : float32 (N,)        — centre-region loading fraction [0, 1]
     orbits   : int32   (N,)        — source orbit for each example
     times    : int64   (N,)        — UTC nanoseconds of window start
     meta     : JSON string with hyperparameters
@@ -233,29 +259,34 @@ def build_dataset(labels_path:  str   = LOADING_LABELS_JSON,
     with open(labels_path) as f:
         raw = json.load(f)
 
-    # orbits with ≥1 loading event
+    # all reviewed orbits (events list may be empty for confirmed negatives)
     orb_events = {
-        int(k): v['loading_events']
+        int(k): v.get('loading_events', [])
         for k, v in raw.items()
-        if isinstance(v, dict) and v.get('loading_events')
+        if isinstance(v, dict) and v.get('reviewed', False)
     }
-    print(f'Found {len(orb_events)} orbits with loading events.')
-    print(f'Window: {window_sec} s   Step: {step_sec} s   '
-          f'Sample rate: {sample_hz} Hz   '
-          f'({int(window_sec * sample_hz)} samples/window)\n')
+    n_with = sum(1 for ev in orb_events.values() if ev)
+    n_without = len(orb_events) - n_with
+    print(f'Found {len(orb_events)} reviewed orbits  '
+          f'({n_with} with events, {n_without} confirmed negative).')
+    print(f'Window: {window_sec} s   Label region: {label_sec} s (centre)   '
+          f'Step: {step_sec} s   Sample rate: {sample_hz} Hz   '
+          f'({int(window_sec * sample_hz)} samples/window)'
+          f'{"   north-only" if north_only else ""}\n')
 
     all_windows, all_labels, all_orbits, all_times = [], [], [], []
 
     for orb, events in sorted(orb_events.items()):
-        print(f'  Orbit {orb:5d}  ({len(events)} event(s)) … ',
-              end='', flush=True)
-        result = process_orbit(orb, events, window_sec, step_sec, sample_hz)
+        tag = f'({len(events)} event(s))' if events else '(no events)'
+        print(f'  Orbit {orb:5d}  {tag} … ', end='', flush=True)
+        result = process_orbit(orb, events, window_sec, step_sec, sample_hz, label_sec,
+                               north_only=north_only)
         if result is None:
             print('skipped (insufficient data)')
             continue
 
         K     = len(result['labels'])
-        n_pos = int(result['labels'].sum())
+        n_pos = int((result['labels'] > 0).sum())
         all_windows.append(result['windows'])
         all_labels.append(result['labels'])
         all_orbits.append(np.full(K, orb, dtype='int32'))
@@ -268,23 +299,34 @@ def build_dataset(labels_path:  str   = LOADING_LABELS_JSON,
     orbits  = np.concatenate(all_orbits,  axis=0)
     times   = np.concatenate(all_times,   axis=0)
 
-    # ── balance classes: downsample background to match positive count ─────────
-    pos_idx = np.where(labels > 0)[0]
-    neg_idx = np.where(labels == 0)[0]
-    rng     = np.random.default_rng(seed=0)
-    neg_keep = rng.choice(neg_idx, size=len(pos_idx), replace=False)
-    keep    = np.sort(np.concatenate([pos_idx, neg_keep]))
-    windows = windows[keep]
-    labels  = labels[keep]
-    orbits  = orbits[keep]
-    times   = times[keep]
-    print(f'\nAfter balancing  : {len(labels):,} windows  '
-          f'({len(pos_idx):,} pos + {len(neg_keep):,} neg)')
+    # ── balance: downsample negatives to achieve target neg_frac ──────────────
+    pos_idx  = np.where(labels > 0)[0]
+    neg_idx  = np.where(labels == 0)[0]
+    n_pos    = len(pos_idx)
+    # negatives needed so that neg / (neg + pos) == neg_frac
+    n_neg_target = min(len(neg_idx),
+                       int(round(n_pos * neg_frac / max(1 - neg_frac, 1e-9))))
+    rng      = np.random.default_rng(seed=0)
+    neg_keep = rng.choice(neg_idx, size=n_neg_target, replace=False)
+    keep     = np.sort(np.concatenate([pos_idx, neg_keep]))
+    windows  = windows[keep]
+    labels   = labels[keep]
+    orbits   = orbits[keep]
+    times    = times[keep]
+    actual_neg_pct = 100 * n_neg_target / (n_pos + n_neg_target)
+    print(f'\nRaw windows      : {len(pos_idx) + len(neg_idx):,}  '
+          f'({n_pos:,} pos, {len(neg_idx):,} neg)')
+    print(f'After balancing  : {len(labels):,} windows  '
+          f'({n_pos:,} pos + {n_neg_target:,} neg,  '
+          f'{actual_neg_pct:.1f}% negative)')
 
     meta = json.dumps({
         'window_sec': window_sec,
         'step_sec':   step_sec,
         'sample_hz':  sample_hz,
+        'label_sec':  label_sec,
+        'neg_frac':   neg_frac,
+        'north_only': north_only,
         'W':          int(window_sec * sample_hz),
         'channels':   ['dBx', 'dBz', 'dBmag'],
         'n_orbits':   len(orb_events),
@@ -315,21 +357,25 @@ def plot_orbit_labels(orb:        int   = None,
                       window_sec: int   = DEFAULT_WINDOW_SEC,
                       step_sec:   int   = DEFAULT_STEP_SEC,
                       sample_hz:  float = DEFAULT_SAMPLE_HZ,
-                      labels_path: str  = LOADING_LABELS_JSON) -> None:
+                      labels_path: str  = LOADING_LABELS_JSON,
+                      run_model:  bool  = False,
+                      north_only: bool  = NORTH_ONLY) -> None:
     """
     Three-panel plot for one orbit:
       1. Bx / By / Bz  — observed (solid) and KT17 model (dashed)
       2. FIPS H+ differential flux spectrogram
-      3. Window label (0/1) plotted at each window's centre time
+      3. Window label (0/1) plotted at each window's centre time;
+         if run_model=True, model output scores are overlaid in orange.
 
     Parameters
     ----------
     orb         : orbit number.  If None, a random orbit from
                   human_loading_labels.json (with ≥1 event) is chosen.
-    window_sec  : sliding-window length (must match the desired dataset config)
+    window_sec  : sliding-window length (must match the trained model config)
     step_sec    : stride between windows
     sample_hz   : resampling rate
     labels_path : path to human_loading_labels.json
+    run_model   : if True, load loading_cnn.pt and overlay model scores
     """
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -388,6 +434,7 @@ def plot_orbit_labels(orb:        int   = None,
     Bxm    = _lp_interp(Bxm_raw)
     Bym    = _lp_interp(Bym_raw)
     Bzm    = _lp_interp(Bzm_raw)
+    z_msm  = _lp_interp(orb_df['ephz'].to_numpy(dtype='float64'))
 
     # dataset features: ΔBx/|Bmod|, ΔBz/|Bmod| on the resampled grid
     Bmag_mod  = np.sqrt(Bxm**2 + Bym**2 + Bzm**2)
@@ -398,8 +445,22 @@ def plot_orbit_labels(orb:        int   = None,
     t0_ns  = t_obs_raw.iloc[0].value
     t_obs  = pd.to_datetime((t0_ns + (t_uniform * 1e9).astype('int64')))
 
+    # ── trim to northern hemisphere if north_only ─────────────────────────────
+    if north_only:
+        north_mask = z_msm >= 0
+        t_obs     = t_obs[north_mask]
+        Bx_obs    = Bx_obs[north_mask]
+        By_obs    = By_obs[north_mask]
+        Bz_obs    = Bz_obs[north_mask]
+        Bxm       = Bxm[north_mask]
+        Bym       = Bym[north_mask]
+        Bzm       = Bzm[north_mask]
+        dBx_norm  = dBx_norm[north_mask]
+        dBz_norm  = dBz_norm[north_mask]
+
     # ── compute window labels ─────────────────────────────────────────────────
-    result = process_orbit(orb, loading_events, window_sec, step_sec, sample_hz)
+    result = process_orbit(orb, loading_events, window_sec, step_sec, sample_hz,
+                           north_only=north_only)
     if result is None:
         print(f'Orbit {orb} too short for window_sec={window_sec}'); return
 
@@ -425,6 +486,51 @@ def plot_orbit_labels(orb:        int   = None,
             fips_ok   = True
     except Exception as e:
         print(f'  FIPS unavailable: {e}')
+
+    # ── model inference ───────────────────────────────────────────────────────
+    model_scores = None
+    model_ctimes = None
+    if run_model:
+        import torch
+        pt_path   = os.path.join(_DIR, 'loading_cnn.pt')
+        hist_path = os.path.join(_DIR, 'loading_cnn_history.json')
+        try:
+            with open(hist_path) as _f:
+                _hist = json.load(_f)
+            cnn_width_saved = _hist.get('cnn_width', CNN_WIDTH)
+            W_inf    = max(1, round(window_sec * sample_hz))
+            stride_i = max(1, round(step_sec   * sample_hz))
+            _model   = LoadingCNN.build(W_inf, cnn_width=cnn_width_saved)
+            _model.load_state_dict(torch.load(pt_path, map_location='cpu'))
+            _model.eval()
+
+            # recompute dBmag_norm for inference (same as feature panel)
+            Bmag_obs_rs_i = np.sqrt(Bx_obs**2 + By_obs**2 + Bz_obs**2)
+            Bmag_mod_rs_i = np.sqrt(Bxm**2    + Bym**2    + Bzm**2)
+            Bmag_mod_rs_i = np.where(Bmag_mod_rs_i > 1e-6, Bmag_mod_rs_i, np.nan)
+            dBmag_norm_i  = (Bmag_obs_rs_i - Bmag_mod_rs_i) / Bmag_mod_rs_i
+
+            n_s = len(t_uniform)
+            scores, ctimes = [], []
+            t0_int = t_obs_raw.iloc[0].value   # ns since epoch
+            for s in range(0, n_s - W_inf + 1, stride_i):
+                e   = s + W_inf
+                win_data = np.stack([dBx_norm[s:e],
+                                     dBz_norm[s:e],
+                                     dBmag_norm_i[s:e]], axis=0)
+                if not np.isfinite(win_data).all():
+                    continue
+                x = torch.tensor(win_data[np.newaxis], dtype=torch.float32)
+                with torch.no_grad():
+                    scores.append(float(_model(x).item()))
+                centre_ns = t0_int + int((t_uniform[s] + t_uniform[e - 1]) * 0.5 * 1e9)
+                ctimes.append(np.datetime64(centre_ns, 'ns'))
+
+            model_scores = np.array(scores)
+            model_ctimes = np.array(ctimes, dtype='datetime64[ms]').astype(object)
+            print(f'  Model inference: {len(scores)} windows scored')
+        except Exception as _e:
+            print(f'  Model inference failed: {_e}')
 
     # ── plot ──────────────────────────────────────────────────────────────────
     n_rows    = 4 if fips_ok else 3
@@ -490,13 +596,17 @@ def plot_orbit_labels(orb:        int   = None,
                    fontsize=8, va='top', color='white', fontweight='bold',
                    bbox=dict(boxstyle='round,pad=0.2', fc='k', alpha=0.4))
 
-    # panel last — window labels
+    # panel last — window labels (+ model scores if requested)
     ct = centre_times.astype('datetime64[ms]').astype(object)  # for matplotlib
     ax_lbl.fill_between(ct, win_labels, step='mid',
-                        color='limegreen', alpha=0.7, linewidth=0)
-    ax_lbl.set_yticks([0, 1])
-    ax_lbl.set_yticklabels(['bkg', 'load'], fontsize=8)
-    ax_lbl.set_ylabel('Label')
+                        color='limegreen', alpha=0.5, linewidth=0, label='Truth')
+    if model_scores is not None and len(model_scores):
+        ax_lbl.plot(model_ctimes, model_scores,
+                    color='darkorange', lw=1.2, drawstyle='steps-mid', label='Model')
+        ax_lbl.legend(fontsize=8, loc='upper right')
+    ax_lbl.set_yticks([0, 0.5, 1])
+    ax_lbl.set_yticklabels(['0', '0.5', '1'], fontsize=8)
+    ax_lbl.set_ylabel('Score')
     ax_lbl.set_ylim(-0.05, 1.15)
     ax_lbl.grid(True, alpha=0.25)
 
@@ -769,9 +879,30 @@ def train_model(npz_path:    str   = DATASET_NPZ,
     print(f'Model parameters: {total:,}')
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
-    criterion = torch.nn.BCELoss()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=LR_FACTOR, patience=LR_PATIENCE)
+
+    # ── weighted BCE: up-weight positives so both classes contribute equally ──
+    # pos_weight = n_neg / n_pos; applied per-sample via BCELoss(reduction='none')
+    train_labels = ds_train.labels.numpy() if hasattr(ds_train.labels, 'numpy') else np.array(ds_train.labels)
+    n_pos_train  = float((train_labels > 0).sum())
+    n_neg_train  = float((train_labels == 0).sum())
+    pos_weight   = (n_neg_train / n_pos_train) if n_pos_train > 0 else 1.0
+    print(f'pos_weight = {pos_weight:.2f}  '
+          f'(n_pos={int(n_pos_train):,}  n_neg={int(n_neg_train):,})')
+    criterion = torch.nn.BCELoss(reduction='none')
+
+    def weighted_loss(pred, y):
+        w = torch.where(y > 0,
+                        torch.full_like(y, pos_weight),
+                        torch.ones_like(y))
+        return (criterion(pred, y) * w).mean()
 
     train_losses, val_losses = [], []
+    import copy
+    best_val_loss   = float('inf')
+    best_state_dict = None
+    es_counter      = 0   # epochs since last val improvement
 
     # ── training loop ─────────────────────────────────────────────────────────
     for epoch in range(1, n_epochs + 1):
@@ -782,22 +913,33 @@ def train_model(npz_path:    str   = DATASET_NPZ,
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             pred = model(x)
-            loss = criterion(pred, y)
+            loss = weighted_loss(pred, y)
             loss.backward()
             optimizer.step()
             running += loss.item() * len(y)
         train_losses.append(running / len(ds_train))
 
-        # — validate —
+        # — validate (unweighted so val BCE is comparable across neg_frac values) —
         model.eval()
         running = 0.0
         with torch.no_grad():
             for x, y in loader_val:
                 x, y = x.to(device), y.to(device)
                 pred  = model(x)
-                loss  = criterion(pred, y)
+                loss  = criterion(pred, y).mean()
                 running += loss.item() * len(y)
         val_losses.append(running / max(len(ds_val), 1))
+
+        # — scheduler & early stopping —
+        scheduler.step(val_losses[-1])
+        if val_losses[-1] < best_val_loss:
+            best_val_loss   = val_losses[-1]
+            best_state_dict = copy.deepcopy(model.state_dict())
+            es_counter      = 0
+            best_marker     = '  *'
+        else:
+            es_counter += 1
+            best_marker = ''
 
         saved_str = ''
         if PLOT_INTERVAL > 0 and epoch % PLOT_INTERVAL == 0:
@@ -806,9 +948,21 @@ def train_model(npz_path:    str   = DATASET_NPZ,
             saved_str = '  [examples saved]'
 
         if epoch % max(1, n_epochs // 10) == 0 or epoch == 1:
+            cur_lr = optimizer.param_groups[0]['lr']
             print(f'  Epoch {epoch:4d}/{n_epochs}  '
                   f'train BCE={train_losses[-1]:.4f}  '
-                  f'val BCE={val_losses[-1]:.4f}{saved_str}')
+                  f'val BCE={val_losses[-1]:.4f}  '
+                  f'lr={cur_lr:.2e}{best_marker}{saved_str}')
+
+        if EARLY_STOP_PATIENCE > 0 and es_counter >= EARLY_STOP_PATIENCE:
+            print(f'  Early stop at epoch {epoch}  '
+                  f'(best val BCE={best_val_loss:.4f})')
+            break
+
+    # ── restore best weights ──────────────────────────────────────────────────
+    if best_state_dict is not None:
+        model.load_state_dict(best_state_dict)
+        print(f'  Restored best weights  (val BCE={best_val_loss:.4f})')
 
     # ── gather validation predictions for scatter ────────────────────────────
     model.eval()
@@ -909,7 +1063,10 @@ def run_sweep(npz_base:    str   = DATASET_NPZ,
               train_ratio: float = TRAIN_RATIO,
               lr:          float = LEARNING_RATE,
               labels_path: str   = LOADING_LABELS_JSON,
-              step_sec:    int   = DEFAULT_STEP_SEC) -> None:
+              step_sec:    int   = DEFAULT_STEP_SEC,
+              label_sec:   float = DEFAULT_LABEL_SEC,
+              neg_frac:    float = NEG_FRAC,
+              north_only:  bool  = NORTH_ONLY) -> None:
     """
     Grid search over all permutations of SWEEP_WINDOW_SEC × SWEEP_SAMPLE_HZ × SWEEP_CNN_WIDTH.
 
@@ -922,21 +1079,26 @@ def run_sweep(npz_base:    str   = DATASET_NPZ,
     """
     import itertools
 
-    combos = list(itertools.product(SWEEP_WINDOW_SEC, SWEEP_SAMPLE_HZ, SWEEP_CNN_WIDTH))
+    combos = list(itertools.product(SWEEP_WINDOW_SEC, SWEEP_SAMPLE_HZ,
+                                    SWEEP_CNN_WIDTH, SWEEP_LABEL_SEC,
+                                    SWEEP_NEG_FRAC))
     n_combos = len(combos)
     print(f"\n{'='*60}")
     print(f"Hyperparameter sweep: {n_combos} combinations")
     print(f"  window_sec : {SWEEP_WINDOW_SEC}")
     print(f"  sample_hz  : {SWEEP_SAMPLE_HZ}")
     print(f"  cnn_width  : {SWEEP_CNN_WIDTH}")
+    print(f"  label_sec  : {SWEEP_LABEL_SEC}")
+    print(f"  neg_frac   : {SWEEP_NEG_FRAC}")
     print(f"{'='*60}\n")
 
     results = []
-    for i, (window_sec, sample_hz, cnn_width) in enumerate(combos, 1):
-        tag = f"win{window_sec}_hz{sample_hz}_cnn{cnn_width}"
+    for i, (window_sec, sample_hz, cnn_width, lbl_sec, nf) in enumerate(combos, 1):
+        tag = f"win{window_sec}_hz{sample_hz}_cnn{cnn_width}_lbl{lbl_sec}_neg{nf}"
         remaining = n_combos - i
         print(f"\n{'─'*60}")
-        print(f"[{i}/{n_combos}]  window={window_sec}s  hz={sample_hz}  cnn_width={cnn_width}"
+        print(f"[{i}/{n_combos}]  window={window_sec}s  hz={sample_hz}  "
+              f"cnn_width={cnn_width}  label={lbl_sec}s  neg_frac={nf}"
               f"  ({remaining} remaining after this)")
         print(f"{'─'*60}")
 
@@ -945,10 +1107,11 @@ def run_sweep(npz_base:    str   = DATASET_NPZ,
         try:
             build_dataset(labels_path=labels_path, out_path=tmp_npz,
                           window_sec=window_sec, step_sec=step_sec,
-                          sample_hz=sample_hz)
+                          sample_hz=sample_hz, label_sec=lbl_sec,
+                          neg_frac=nf, north_only=north_only)
         except Exception as e:
             print(f"  build failed: {e}")
-            results.append((tag, window_sec, sample_hz, cnn_width, float('nan')))
+            results.append((tag, window_sec, sample_hz, cnn_width, lbl_sec, nf, float('nan')))
             continue
 
         try:
@@ -970,30 +1133,31 @@ def run_sweep(npz_base:    str   = DATASET_NPZ,
                 pass
 
         print(f"\n  DONE [{i}/{n_combos}]  window={window_sec}s  hz={sample_hz}"
-              f"  cnn_width={cnn_width}  =>  val BCE = {val_mse:.4f}"
-              f"  ({remaining} remaining)\n")
-        results.append((tag, window_sec, sample_hz, cnn_width, val_mse))
+              f"  cnn_width={cnn_width}  label={lbl_sec}s  neg_frac={nf}"
+              f"  =>  val BCE = {val_mse:.4f}  ({remaining} remaining)\n")
+        results.append((tag, window_sec, sample_hz, cnn_width, lbl_sec, nf, val_mse))
 
     # ── summary ───────────────────────────────────────────────────────────────
-    results.sort(key=lambda r: (float('inf') if r[4] != r[4] else r[4]))
+    results.sort(key=lambda r: (float('inf') if r[6] != r[6] else r[6]))
     print(f"\n{'='*60}")
     print(f"Sweep complete — ranked by validation BCE")
     print(f"{'='*60}")
-    print(f"  {'Rank':>4}  {'window_sec':>10}  {'sample_hz':>9}  {'cnn_width':>9}  {'val_BCE':>8}")
-    print(f"  {'-'*4}  {'-'*10}  {'-'*9}  {'-'*9}  {'-'*8}")
-    for rank, (tag, win, hz, cw, mse) in enumerate(results, 1):
+    print(f"  {'Rank':>4}  {'window_sec':>10}  {'sample_hz':>9}  {'cnn_width':>9}  {'label_sec':>9}  {'neg_frac':>8}  {'val_BCE':>8}")
+    print(f"  {'-'*4}  {'-'*10}  {'-'*9}  {'-'*9}  {'-'*9}  {'-'*8}  {'-'*8}")
+    for rank, (tag, win, hz, cw, ls, nf, mse) in enumerate(results, 1):
         marker = '  <-- best' if rank == 1 else ''
-        print(f"  {rank:>4}  {win:>10}  {hz:>9.2f}  {cw:>9}  {mse:>8.4f}{marker}")
+        print(f"  {rank:>4}  {win:>10}  {hz:>9.2f}  {cw:>9}  {ls:>9}  {nf:>8.2f}  {mse:>8.4f}{marker}")
     print(f"{'='*60}\n")
 
     # ── retrain best configuration and save weights / history ─────────────────
-    best_tag, best_win, best_hz, best_cw, best_mse = results[0]
+    best_tag, best_win, best_hz, best_cw, best_lbl, best_nf, best_mse = results[0]
     if not (best_mse != best_mse):   # skip if best is NaN
         print(f"Re-training best configuration ({best_tag}) to save weights …")
         tmp_npz = os.path.join(os.path.dirname(npz_base), f'_sweep_{best_tag}.npz')
         build_dataset(labels_path=labels_path, out_path=tmp_npz,
                       window_sec=best_win, step_sec=step_sec,
-                      sample_hz=best_hz)
+                      sample_hz=best_hz, label_sec=best_lbl,
+                      neg_frac=best_nf, north_only=north_only)
         train_model(npz_path=tmp_npz,
                     batch_size=batch_size,
                     n_epochs=n_epochs,
@@ -1017,6 +1181,8 @@ def main():
                         help='Build sliding-window dataset and save to .npz')
     parser.add_argument('--plot',   action='store_true',
                         help='Plot B field, FIPS H+, and window labels for one orbit')
+    parser.add_argument('--test',   action='store_true',
+                        help='Like --plot but also overlays model scores from loading_cnn.pt')
     parser.add_argument('--train',   action='store_true',
                         help='Train the CNN on nn_dataset.npz and plot loss history')
     parser.add_argument('--summary', action='store_true',
@@ -1041,16 +1207,25 @@ def main():
                         help=f'Mini-batch size (default {BATCH_SIZE})')
     parser.add_argument('--split',  type=float, default=TRAIN_RATIO,
                         help=f'Train/val orbit split ratio (default {TRAIN_RATIO})')
+    parser.add_argument('--label',  type=float, default=DEFAULT_LABEL_SEC,
+                        help=f'Center region (seconds) used for label computation '
+                             f'(default {DEFAULT_LABEL_SEC}; set = window for whole-window label)')
+    parser.add_argument('--neg',        type=float, default=NEG_FRAC,
+                        help=f'Target negative fraction after balancing (default {NEG_FRAC})')
+    parser.add_argument('--north-only', action='store_true', default=NORTH_ONLY,
+                        help='Zero out labels for windows where spacecraft Z_MSM < 0 (southern hemisphere)')
     args = parser.parse_args()
 
     if args.build:
         build_dataset(labels_path=args.labels, out_path=args.out,
                       window_sec=args.window, step_sec=args.step,
-                      sample_hz=args.hz)
-    elif args.plot:
+                      sample_hz=args.hz, label_sec=args.label,
+                      neg_frac=args.neg, north_only=args.north_only)
+    elif args.plot or args.test:
         plot_orbit_labels(orb=args.orbit,
                           window_sec=args.window, step_sec=args.step,
-                          sample_hz=args.hz, labels_path=args.labels)
+                          sample_hz=args.hz, labels_path=args.labels,
+                          run_model=args.test, north_only=args.north_only)
     elif args.train:
         train_model(npz_path=args.out,
                     batch_size=args.batch,
@@ -1061,7 +1236,8 @@ def main():
     elif args.sweep:
         run_sweep(labels_path=args.labels, step_sec=args.step,
                   n_epochs=args.epochs, batch_size=args.batch,
-                  train_ratio=args.split)
+                  train_ratio=args.split, label_sec=args.label,
+                  neg_frac=args.neg, north_only=args.north_only)
     else:
         parser.print_help()
 
