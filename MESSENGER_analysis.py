@@ -2517,9 +2517,7 @@ def event_filtering_toolkit_loading(orbit_start, orbit_end, fontsize=8,
             ax_bot.set_ylabel(r'$\Delta$B (nT)', fontsize=fontsize)
             ax_bot.tick_params(labelbottom=(n_fips == 0))
             if n_fips == 0:
-                date_str = t_e.iloc[0].strftime('%Y-%m-%d')
-                ax_bot.set_xlabel(f'UTC  {date_str}', fontsize=fontsize)
-                plt.setp(ax_bot.get_xticklabels(), rotation=30, ha='right')
+                set_ephemeris_ticklabels(ax_bot, orb_df, fontsize=fontsize)
             ax_bot.grid(); ax_bot.set_xlim(t_e.iloc[0], t_e.iloc[-1])
 
             # FIPS rows
@@ -2561,11 +2559,8 @@ def event_filtering_toolkit_loading(orbit_start, orbit_end, fontsize=8,
                                             fc='k', alpha=0.45))
                         ax_f.set_xlim(t_e.iloc[0], t_e.iloc[-1])
                         if fi == n_fips - 1:
-                            date_str = t_e.iloc[0].strftime('%Y-%m-%d')
-                            ax_f.set_xlabel(f'UTC  {date_str}',
-                                            fontsize=fontsize)
-                            plt.setp(ax_f.get_xticklabels(),
-                                     rotation=30, ha='right')
+                            set_ephemeris_ticklabels(ax_f, orb_df,
+                                                     fontsize=fontsize)
                         else:
                             ax_f.tick_params(labelbottom=False)
                 except Exception as exc:
@@ -4640,7 +4635,7 @@ def plot_fips_for_orbit(orb, species=None, save=True):
 # Swap to investigating loading times
 
 # Label loading events
-event_filtering_toolkit_loading(915, 1014, species=['H+'], auto_review_page=True)
+event_filtering_toolkit_loading(2800, 2801, species=['H+'], auto_review_page=True)
 
 # Show all labeled loading events
 #event_filtering_toolkit_v1(human_loading=True)
