@@ -6,7 +6,7 @@ MESSENGER magnetometer and FIPS particle data — core utilities.
 Functions
 ---------
 load_bowers_data_pkl        Load MAG data (time, Bx/By/Bz, ephemeris, region)
-get_kt17_along_track        Evaluate KT17 model field at MESSENGER positions
+get_kt17_along_track        Evaluate KT173 model field at MESSENGER positions
 transform_to_fac            Rotate observed B into field-aligned coordinates
 set_ephemeris_ticklabels    Add UT / lat / lon / alt tick labels to a plot axis
 plot_quick_look             Overview plot: Bx/By/Bz + optional FIPS spectrogram
@@ -15,7 +15,6 @@ plot_fips_espec_spectrogram Plot FIPS differential-flux spectrogram(s)
 plot_fips_for_orbit         Convenience wrapper: FIPS spectrogram for one orbit number
 download_all_fips_espec     Download the full mission FIPS ESPEC dataset from PDS
 """
-
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
@@ -131,6 +130,7 @@ def load_bowers_data_pkl(trange=None, orbit_number=None, filename=None):
     else:
         return pq.read_table(parquet_path).to_pandas()
 
+#print(load_bowers_data_pkl(trange=['2015-04-05/01:50:00', '2015-04-05/01:52:00']))
 # ---------------------------------------------------------------------------
 # Human-labelled loading periods
 # ---------------------------------------------------------------------------
@@ -271,9 +271,9 @@ def filter_orbit_segment(orb_df):
 
     criteria = (
         (orb_df['ephx'] < 0.0) &
-        (orb_df['ephz'] > -2.0) &
-        (orb_df['ephz'] < 1.25) &
-        ((orb_df['ephx']**2 + orb_df['ephy']**2 + orb_df['ephz']**2) < 3**2)
+        (orb_df['ephz'] > -1.0) &
+        (orb_df['ephz'] < 0.8) &
+        ((orb_df['ephx']**2 + orb_df['ephy']**2 + orb_df['ephz']**2) < 4**2)
     ).to_numpy()
 
     starts = np.where(np.diff(criteria.astype(int)) == 1)[0] + 1
@@ -294,6 +294,75 @@ def filter_orbit_segment(orb_df):
         return empty
 
     return orb_df.iloc[seg_start:seg_end + 1]
+
+# ---------------------------------------------------------------------------
+# Trajectory export
+# ---------------------------------------------------------------------------
+def extract_traj(orbit, save_path=None, events_json=None):
+    """
+    Save the nightside current-sheet segment of an orbit to a CSV file.
+
+    Columns
+    -------
+    t_datetime  : ISO-8601 timestamp string
+    t_epoch     : seconds since the segment start (float, starts at 0)
+    x, y, z     : position in R_M, MSM
+    bx, by, bz  : magnetic field in nT, MSM
+
+    The output filename embeds the labelled loading-event start time (read
+    from events_json) so downstream scripts can locate the substorm onset
+    without re-parsing the labels file.
+
+    Parameters
+    ----------
+    orbit       : int orbit number
+    save_path   : output CSV path (default: <script_dir>/trajectories/orbit_<orbit>_start_<ISO>_traj.csv,
+                  or .../orbit_<orbit>_traj.csv if no labelled event is found)
+    events_json : path to a loading-events JSON (default: <script_dir>/equatorial_events.json);
+                  uses the first event's 'start' for the orbit, if present
+
+    Returns the DataFrame that was written.
+    """
+    orb_df = load_bowers_data_pkl(orbit_number=orbit)
+    seg = filter_orbit_segment(orb_df)
+    if seg.empty:
+        raise ValueError(f'No nightside current-sheet segment found for orbit {orbit}.')
+
+    t = pd.to_datetime(seg['time'])
+    t_epoch = (t - t.iloc[0]).dt.total_seconds().to_numpy()
+
+    out = pd.DataFrame({
+        't_datetime': t.dt.strftime('%Y-%m-%dT%H:%M:%S.%f'),
+        't_epoch':    t_epoch,
+        'x':          seg['ephx'].to_numpy(),
+        'y':          seg['ephy'].to_numpy(),
+        'z':          seg['ephz'].to_numpy(),
+        'bx':         seg['magx'].to_numpy(),
+        'by':         seg['magy'].to_numpy(),
+        'bz':         seg['magz'].to_numpy(),
+    })
+
+    if events_json is None:
+        events_json = os.path.join(_SCRIPT_DIR, 'equatorial_events.json')
+    event_start = None
+    if os.path.exists(events_json):
+        with open(events_json) as f:
+            events = json.load(f).get(str(orbit), {}).get('loading_events', [])
+        if events:
+            event_start = pd.Timestamp(events[0]['start'])
+
+    if save_path is None:
+        out_dir = os.path.join(_SCRIPT_DIR, 'trajectories')
+        os.makedirs(out_dir, exist_ok=True)
+        if event_start is not None:
+            tag = event_start.strftime('%Y%m%dT%H%M%S')
+            save_path = os.path.join(out_dir, f'orbit_{orbit}_start_{tag}_traj.csv')
+        else:
+            save_path = os.path.join(out_dir, f'orbit_{orbit}_traj.csv')
+
+    out.to_csv(save_path, index=False)
+    print(f'Saved: {save_path}  ({len(out)} points)')
+    return out
 
 # ---------------------------------------------------------------------------
 # KT17 model field
@@ -429,14 +498,15 @@ def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='latlon'):
 # ---------------------------------------------------------------------------
 def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_sec=1,
                     orbit=None, only_cs=False, show_loading=True, show_kt17=False,
+                    show_kt17_residual=None,
                     save_path=None, df=None, ylim_mag=None,
                     show_inset=True, df_full=None, _show=True):
     """
     Overview plot for an arbitrary time window or orbit number.
 
     Rows (top to bottom):
-      - Bx / By / Bz / |B| (nT, optionally smoothed)
-      - ΔBx / ΔBy / ΔBz (obs − KT17) with zero line  [if show_kt17=True]
+      - Bx / By / Bz / |B| (nT, optionally smoothed) [+ dashed KT17 model if show_kt17=True]
+      - ΔBx / ΔBy / ΔBz (obs − KT17) with zero line  [if show_kt17_residual=True]
       - Region colour bar (from Type_num column, if present)
       - One FIPS differential-flux spectrogram per entry in *species*
 
@@ -452,7 +522,9 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
                       green  dashed  — event start
                       orange dashed  — partition (peak |ΔBx|)
                       red    dashed  — event stop
-    show_kt17     : if True, add a residual panel (obs − KT17) below the mag panel
+    show_kt17     : if True, overlay the dashed KT17 model field in the top mag panel
+    show_kt17_residual : if True, add a residual panel (obs − KT17) below the mag panel;
+                    defaults to the value of show_kt17 (old behaviour) when left as None
     species       : FIPS species to show, e.g. ('H+',) or ('H+', 'He++').
                     Pass () for mag-only.
     smooth_sec    : boxcar smoothing window in seconds (0 or None for raw)
@@ -501,9 +573,11 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
         Bx, By, Bz = df['magx'].to_numpy(), df['magy'].to_numpy(), df['magz'].to_numpy()
 
     # KT17 model field (computed here so residuals are ready before subplot layout)
+    if show_kt17_residual is None:
+        show_kt17_residual = show_kt17
     dBx = dBy = dBz = dBmag = None
     Bxm_plot = Bym_plot = Bzm_plot = Bmagm_plot = None
-    if show_kt17:
+    if show_kt17 or show_kt17_residual:
         try:
             _, Bxm, Bym, Bzm = get_kt17_along_track(df=df)
             Bmagm = np.sqrt(Bxm**2 + Bym**2 + Bzm**2)
@@ -525,6 +599,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
         except Exception as e:
             print(f'KT17 unavailable: {e}')
             show_kt17 = False
+            show_kt17_residual = False
 
     _region_colors = {
         1: '#4477AA', 2: '#66CCEE', 3: '#CCBB44', 4: '#EE6677', 5: '#AA3377',
@@ -533,10 +608,10 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
     has_region = 'Type_num' in df.columns
 
     n_fips   = len(species)
-    nrows    = 1 + int(show_kt17) + int(has_region) + n_fips
-    h_ratios = [3] + ([2] if show_kt17 else []) + ([0.12] if has_region else []) + [1] * n_fips
+    nrows    = 1 + int(show_kt17_residual) + int(has_region) + n_fips
+    h_ratios = [3] + ([2] if show_kt17_residual else []) + ([0.12] if has_region else []) + [1] * n_fips
     fig, axes = plt.subplots(nrows, 1, sharex=True,
-                             figsize=(figsize[0], figsize[1] + int(show_kt17) * 2 + n_fips * 1.5),
+                             figsize=(figsize[0], figsize[1] + int(show_kt17_residual) * 2 + n_fips * 1.5),
                              gridspec_kw={'hspace': 0.05, 'height_ratios': h_ratios})
     axes = list(np.atleast_1d(axes))
     fig._data_axes = axes   # expose to callers (excludes inset / button axes)
@@ -563,7 +638,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
     if ylim_mag is not None:
         ax_mag.set_ylim(ylim_mag)
     else:
-        B_all = np.concatenate([Bx, By, Bz])
+        B_all = np.concatenate([Bx, By, Bz, Bmag])
         B_all = B_all[np.isfinite(B_all)]
         if len(B_all):
             pad = 0.05 * (B_all.max() - B_all.min()) or 1.0
@@ -589,7 +664,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
         except Exception:
             pass
 
-    if show_kt17 and dBx is not None:
+    if show_kt17_residual and dBx is not None:
         ax_res = axes[1]
         ax_res.plot(t, dBx,   color='red',   lw=0.7, label='ΔBx')
         ax_res.plot(t, dBy,   color='green', lw=0.7, label='ΔBy')
@@ -607,7 +682,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
 
     if has_region:
         from matplotlib.patches import Patch
-        ax_bar   = axes[1 + int(show_kt17)]
+        ax_bar   = axes[1 + int(show_kt17_residual)]
         type_arr = df['Type_num'].to_numpy()
         t_arr    = t.to_numpy().astype('datetime64[ns]').astype('int64')
         dt_h     = (t_arr[1] - t_arr[0]) // 2 if len(t_arr) > 1 else int(5e8)
@@ -645,7 +720,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
             fips_cmap = plt.cm.nipy_spectral.copy()
             fips_cmap.set_under('black')
 
-            fips_axes = axes[1 + int(show_kt17) + int(has_region):]
+            fips_axes = axes[1 + int(show_kt17_residual) + int(has_region):]
             for ax_f, sp in zip(fips_axes, species):
                 if fmask.sum() < 2:
                     ax_f.text(0.5, 0.5, f'No FIPS data ({sp})',
@@ -664,7 +739,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
                 ax_f.set_ylabel(f'{sp}\nE (keV)', fontsize=8)
                 ax_f.grid(True, alpha=0.2, color='white', lw=0.4)
         except Exception as e:
-            ax_fips0 = axes[1 + int(show_kt17) + int(has_region)]
+            ax_fips0 = axes[1 + int(show_kt17_residual) + int(has_region)]
             ax_fips0.text(0.5, 0.5, f'FIPS unavailable: {e}',
                           ha='center', va='center',
                           transform=ax_fips0.transAxes, fontsize=7)
@@ -1058,12 +1133,282 @@ def plot_fips_for_orbit(orb, species=None, save=True):
 
 
 # ---------------------------------------------------------------------------
+# Jiutong's wavelet code
+# ---------------------------------------------------------------------------
+
+def wavelet_coef_psd(time: np.ndarray, signal: np.ndarray, scales: np.ndarray, bandwidth: float = 6.0, downsample: int = 1, downsample_signal: bool = True):
+    """
+    Compute complex Morlet wavelet coefficients and power spectral density (PSD).
+    Complex Morlet wavelet can be written as:
+
+    Parameters:
+    ----------
+    time : np.ndarray
+        Time vector of shape (Nt,). Can be in seconds or `np.datetime64`.
+    signal : np.ndarray
+        Input signal of shape (Nt,).
+    scales : np.ndarray
+        Wavelet scales corresponding to frequencies of shape (Nf,).
+    bandwidth : float, optional
+        bandwidthandwidth parameter for the Morlet wavelet (default is 6.0).
+    downsample : int, optional
+        Downsampling factor for the output (default is 1, meaning no downsampling).
+    downsample_signal : bool, optional
+        If True, downsample the input signal before computing wavelet coefficients (default is False).
+        If False, the signal is not downsampled, but the output coefficients and PSD are downsampled.
+
+    Returns:
+    -------
+    time : np.ndarray
+        Time vector after optional downsampling.
+    frequency : np.ndarray
+        Frequencies corresponding to the wavelet scales.
+    coef : np.ndarray
+        Complex wavelet coefficients of shape (Nf, Nt), where Nf is the number of frequencies.
+    psd : np.ndarray
+        Power spectral density of shape (Nf, Nt).
+    signal : np.ndarray
+        Downsampled (moving average) signal if downsampling is applied.
+
+    Notes:
+    -----
+    - The function uses `scipy.signal.cwt` with the Morlet wavelet by default.
+    - `scipy.signal.cwt` is deprecated in SciPy 1.12 and will be removed in SciPy 1.15. Alternatives like PyWavelets or ssqueezepy can be used.
+    - The power spectral density (PSD) is computed as the squared magnitude of the wavelet coefficients, scaled by `2 * dt`.
+    - Downsampling is applied to the time, coefficients, PSD, and signal if `downsample > 1`.
+    """
+
+    if downsample_signal:
+        time = time[::downsample]
+        signal = signal[::downsample]
+        downsample = 1
+
+    if isinstance(time[0], np.datetime64):
+        elapsed_time = np.array(time).astype('datetime64[ns]').astype('float') / 1e9
+    else:
+        elapsed_time = np.array(time)
+
+    dt = elapsed_time[1] - elapsed_time[0]
+
+    # === Option 1: scipy.signal implementation ===
+    # bandwidthut, scipy.signal.cwt is deprecated in SciPy 1.12 and will be removed in SciPy 1.15. 
+    # They recommend using PyWavelets instead.
+    # https://docs.scipy.org/doc/scipy-1.12.0/reference/generated/scipy.signal.cwt.html
+    # However, as you can see in the bottom code block, pywt.cwt is actually problematic for the Morlet wavelet.
+
+    # widths = bandwidth * scales / (2 * np.pi)
+    # coef = scipy.signal.cwt(
+    #     signal,
+    #     scipy.signal.morlet2,
+    #     widths = widths,
+    #     w = bandwidth,
+    #     dtype = np.complex128
+    # )
+    # frequency = 1 / dt / scales
+
+    # === Option 2: pywt implementation ===
+    # Unlike scipy.signal.cwt, pywt.cwt is not L2-normalized.
+    # You need to multiply the coefficients by a factor to make them L2-normalized.
+    # Another two problems with pywt.cwt: The precision of the wavelet may be unenough while you can still not adjust the precision yourself.
+    # Check https://github.com/PyWavelets/pywt/issues/531
+    # This defect has been proposed at 2019 but still not fixed yet.
+
+    # central_frequency = 1.0
+    # wavelet = 'cmor%.1f-%.1f' % (bandwidth, central_frequency)
+    # coef, frequency = pywt.cwt(signal, scales, wavelet, dt, method = 'fft')
+    # coef *= np.sqrt(np.sqrt(bandwidth) * np.sqrt(2 * np.pi))  # amplitude normalization for Morlet
+
+    # === Option 3: ssqueezepy implementation (default used here) ===
+    # This one is accurate and fast. They claim that this package is the fastest implementation of the wavelet transform in Python.
+    # bandwidthut, this implementation is not elegantly designed and the input parameters are not well documented.
+    # Also, it requires package numba, which may raise some compatibility issues.
+
+    import ssqueezepy
+    coef, scales = ssqueezepy.cwt(signal, ('morlet', {'mu': bandwidth}), scales = bandwidth / (2 * np.pi) * scales.astype(np.float32), fs = 1 / dt, l1_norm = False)
+    frequency = bandwidth / (2 * np.pi) / dt / scales
+
+    psd = (np.abs(coef) ** 2) * (2 * dt)
+
+
+    return time[::downsample], frequency, coef[:, ::downsample], psd[:, ::downsample], signal[::downsample]
+
+def wfft_coef_psd(time: np.ndarray, signal: np.ndarray, step: int = 1, window: int = 120):
+    """
+    Compute short-time Fourier transform (STFT) coefficients and power spectral density (PSD) using a sliding Hanning window.
+
+    Parameters:
+    ----------
+    time : np.ndarray
+        Time vector of shape (Nt,). Can be in seconds or `np.datetime64`.
+    signal : np.ndarray
+        Input signal of shape (Nt,).
+    step : int, optional
+        Step size for sliding the window (default is 1).
+    window : int, optional
+        Window length in samples (default is 120).
+
+    Returns:
+    -------
+    wtime : np.ndarray
+        Center time for each window after sliding.
+    freq : np.ndarray
+        Frequency vector corresponding to the FFT.
+    coef : np.ndarray
+        Complex FFT coefficients of shape (Nf, Nt), where Nf is the number of frequencies.
+    psd : np.ndarray
+        Power spectral density of shape (Nf, Nt).
+    wsignal : np.ndarray
+        Window-averaged signal of shape (Nt,).
+
+    Notes:
+    -----
+    - The Hanning window is applied to each segment, and normalization is performed based on Parseval's theorem.
+    - The PSD is computed as the squared magnitude of the FFT coefficients, scaled by `2 * dt / window`.
+    """
+
+    if isinstance(time[0], np.datetime64):
+        elapsed_time = np.array(time).astype('datetime64[ns]').astype('float') / 1e9
+    else:
+        elapsed_time = np.array(time)
+
+    dt = elapsed_time[1] - elapsed_time[0]
+
+    # Apply sliding window view
+    wtime = np.lib.stride_tricks.sliding_window_view(elapsed_time, window)[::step][:, 0] + dt * window / 2
+    freq = np.fft.fftfreq(window, dt)[:window // 2]
+    wsignal = np.lib.stride_tricks.sliding_window_view(signal, window)[::step]
+
+    # Apply Hanning window and normalize based on Parseval's theorem
+    wsignal = wsignal * np.sqrt(8 / 3) * np.hanning(window)
+
+    coef = np.fft.fft(wsignal, axis=-1)[:, :window // 2].T
+    psd = (np.abs(coef) ** 2) * 2 * dt / window
+
+    if isinstance(time[0], np.datetime64):
+        wtime = (np.array(wtime) * 1e9).astype('datetime64[ns]')
+
+    wsignal = np.mean(wsignal, axis=-1)
+
+    return wtime, freq, coef, psd, wsignal
+
+def svd_wave_analysis(coef: np.ndarray, freq_window: int = 5, time_window: int = 5):
+    """
+    Perform SVD-based wave polarization analysis to compute planarity, ellipticity, and coherence.
+
+    Parameters:
+    ----------
+    coef : np.ndarray
+        Complex coefficient tensor of shape (Nf, Nt, 3), where Nf is the number of frequencies, Nt is the number of time points, and 3 represents the 3 components.
+    freq_window : int, optional
+        Frequency-domain smoothing window size (default is 5).
+    time_window : int, optional
+        Time-domain smoothing window size (default is 5).
+
+    Returns:
+    -------
+    planarity : np.ndarray
+        Planarity of the wave of shape (Nf, Nt), defined as `1 - sqrt(s3 / s1)`, where s1 and s3 are the largest and smallest singular values.
+    ellipticity_along_k: np.ndarray
+        Ellipticity along the wave vector direction of shape (Nf, Nt), defined as the ratio of the second to the first singular value.
+    coherence : np.ndarray
+        Coherence between the first and second principal components (along vh1 and vh2) of shape (Nf, Nt), computed from the smoothed wavefield spectrum.
+    degree_of_polarization : np.ndarray
+        3D Degree of polarization of shape (Nf, Nt), defined as `sqrt[3 / 2 * tr(J^2) / tr^2(J) - 1 / 2]`, computed using the wavefield spectrum.
+    vh : np.ndarray
+        Right singular vectors of shape (Nf, Nt, 3, 3), representing the polarization basis.
+
+    Notes:
+    -----
+    - The input coefficients are smoothed in both frequency and time domains before performing SVD.
+    - The coherence is computed from the wavefield spectrum in the transformed basis.
+    """
+
+    spec = np.einsum('ijk,ijl->ijkl', coef, coef.conj())
+    spec = bn.move_mean(spec, window=freq_window, min_count=1, axis=0)
+    spec = bn.move_mean(spec, window=time_window, min_count=1, axis=1)
+
+    spec_63 = np.concatenate([spec.real, spec.imag], axis=-2)
+    u, s, vh = np.linalg.svd(spec_63, full_matrices=False)
+
+    planarity = 1 - np.sqrt(s[:, :, 2] / s[:, :, 0])
+    ellipticity_along_k = s[:, :, 1] / s[:, :, 0]
+
+    # Rotate the coefficients to the wave frame, in which the third component is the least significant
+    coef_wf = np.einsum('ijk,ijlk->ijl', coef, vh)
+    spec_wf = np.einsum('ijk,ijl->ijkl', coef_wf, coef_wf.conj())
+    spec_wf = bn.move_mean(spec_wf, window=freq_window, min_count=1, axis=0)
+    spec_wf = bn.move_mean(spec_wf, window=time_window, min_count=1, axis=1)
+
+    # There are two ways to compute the degree of polarization:
+    # To see the difference in theory, please refer to the paper by Taubenschuss and Santonlik (2019).
+    # Equation (28) in Taubenschuss and Santonlik 2019: 
+    # degree_of_polarization = np.sqrt(3 / 2 * np.abs(np.trace(np.matmul(spec, spec), axis1 = 2, axis2 = 3) / (np.trace(spec, axis1 = 2, axis2 = 3) ** 2)) - 1 / 2)
+
+    # Equation (74) in Taubenschuss and Santonlik 2019:
+    # Be careful about np.linalg.eigh, which returns the eigenvalues in ascending order
+    # While np.linalg.svd returns the singular values in descending order  
+    w, v = np.linalg.eigh(spec)
+    degree_of_polarization = (w[:, :, 2] - w[:, :, 1]) / np.sum(w, axis = -1)
+
+    coherence = np.abs(spec_wf[:, :, 0, 1]) / np.sqrt(np.abs(spec_wf[:, :, 0, 0] * spec_wf[:, :, 1, 1]))
+
+    return planarity, ellipticity_along_k, coherence, degree_of_polarization, vh
+
+def fac_wave_analysis(coef: np.ndarray, magf: np.ndarray):
+    """
+    Project wave coefficients into the field-aligned coordinate (FAC) system.
+
+    Parameters:
+    ----------
+    coef : np.ndarray
+        Wavelet or FFT coefficient tensor of shape (Nf, Nt, 3), where Nf is the number of frequencies, Nt is the number of time points, and 3 represents the 3 components.
+    field : np.ndarray
+        Reference magnetic field vector of shape (Nt, 3).
+
+    Returns:
+    -------
+    compressibility : np.ndarray
+        Ratio of parallel power to the total power, indicating the compressibility of the wave.
+    ellipticity_along_b : np.ndarray
+        Ellipticity along the magnetic field direction, defined as the ratio of left-hand to right-hand polarized power.
+
+    Notes:
+    -----
+    - The FAC system is defined using the magnetic field vector as the parallel direction, and two perpendicular directions are computed using cross products.
+    - The left-hand and right-hand polarized components are computed in the perpendicular plane.
+    """
+    dir_para = (magf.T / np.linalg.norm(magf, axis = 1)).T
+    # Find the reference direction that is furthest from the magnetic field direction
+    dir_ref = np.eye(3)[np.argmin(np.abs(dir_para), axis = 1)]
+
+    dir_perp_1 = np.cross(dir_para, dir_ref)
+    dir_perp_1 = (dir_perp_1.T / np.linalg.norm(dir_perp_1, axis = 1)).T
+
+    dir_perp_2 = np.cross(dir_para, dir_perp_1)
+    dir_perp_2 = (dir_perp_2.T / np.linalg.norm(dir_perp_2, axis = 1)).T
+
+    coef_para = np.einsum('ijk,jk->ij', coef, dir_para)
+    coef_perp1 = np.einsum('ijk,jk->ij', coef, dir_perp_1)
+    coef_perp2 = np.einsum('ijk,jk->ij', coef, dir_perp_2)
+
+    coef_lh = (coef_perp1 - 1j * coef_perp2) / np.sqrt(2)
+    coef_rh = (coef_perp1 + 1j * coef_perp2) / np.sqrt(2)
+
+    ellipticity_along_b = (np.abs(coef_rh) - np.abs(coef_lh)) / (np.abs(coef_rh) + np.abs(coef_lh))
+    compressibility = np.abs(coef_para) ** 2 / (np.abs(coef_para) ** 2 + np.abs(coef_lh) ** 2 + np.abs(coef_rh) ** 2)
+
+    return compressibility, ellipticity_along_b
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 # Quick look at a time range (mag + H+ spectrogram):
-#fig = plot_quick_look('2015-04-14/19:22:06', '2015-04-14/19:26:04')
-#fig = plot_quick_look(orbit = 1450, only_cs=True, show_loading=True, show_kt17=True, save_path="figures/quicklook.png")
-#fig = plot_quick_look('2014-08-16/17:30:00', '2014-08-16/17:36:00', only_cs=True, show_loading=True, show_kt17=True, save_path="figures/quicklook.png")
+#fig = plot_quick_look('2015-02-01/07:20:00', '2015-02-01/07:40:00', show_loading=False,show_kt17=True, save_path="figures/quicklook.png")
+#fig = plot_quick_look(orbit = 3782, only_cs=True, show_loading=True, show_kt17=True, save_path="figures/quicklook.png")
+#fig = plot_quick_look('2013-05-31/09:04:10', '2013-05-31/09:06:40', show_loading=False,show_kt17=False, save_path="figures/quicklook.png")
+#fig = plot_quick_look(orbit = 1709, only_cs=True, show_loading=False, show_kt17=True, save_path="figures/quicklook.png")
+
+#fig = plot_quick_look('2013-05-28/17:04:11', '2013-05-28/17:09:11', only_cs=True, show_loading=False, show_kt17=False, save_path="figures/quicklook.png",figsize=(20,6))
 
 # Load MAG data and compute FAC components:
 #   df = load_bowers_data_pkl(orbit_number=3451)
@@ -1071,7 +1416,7 @@ def plot_fips_for_orbit(orb, species=None, save=True):
 #   B_perp, B_phi, B_par = transform_to_fac(
 #       df['magx'], df['magy'], df['magz'], Bxm, Bym, Bzm,
 #       df['ephx'], df['ephy'], df['ephz'])
-
+#
 # FIPS for a specific orbit:
 #plot_fips_for_orbit(3941)
 
@@ -1602,8 +1947,12 @@ def browse_southward_orbits(n0, n1, species=None, show_kt17=True):
     print(f'\nDone — showed {n_shown} southward orbit(s) in range {n0}–{n1}.')
 
 
-def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None):
-    """Interactive loading/unloading event labeller for southward nightside crossings.
+def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, direction='south'):
+    """Interactive loading/unloading event labeller for nightside crossings.
+
+    "Southward"/"northward" here describe the direction Z_MSM moves through
+    the crossing (dZ/dt), not hemisphere — southward means the spacecraft
+    moves from +Z to -Z across the current sheet, northward is the reverse.
 
     For each qualifying orbit three clicks mark one event:
         1st click  →  START      (green solid line)
@@ -1631,10 +1980,14 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None):
     species     : list[str] or None  FIPS species to show
     show_kt17   : bool  overlay KT17 residuals (slow)
     ylim_mag    : (ymin, ymax) or None
+    direction   : 'south' or 'north' — which crossing direction (dZ/dt sign) to label
     """
     import json as _json
     import matplotlib.dates as mdates
     from matplotlib.widgets import Button
+
+    if direction not in ('south', 'north'):
+        raise ValueError("direction must be 'south' or 'north'")
 
     if json_path is None:
         json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
@@ -1656,10 +2009,10 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None):
         seg = filter_orbit_segment(orb_df)
         if seg.empty:
             continue
-        seg = seg[seg['ephz'] > 0]
+        seg = seg[seg['ephz'] > -1] if direction == 'south' else seg[seg['ephz'] < 1]
         if seg.empty:
             continue
-        if not _is_southward(seg):
+        if _is_southward(seg) != (direction == 'south'):
             continue
 
         fig = plot_quick_look(df=seg, orbit=orb, df_full=orb_df, species=sp,
@@ -1797,10 +2150,12 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None):
 
 
 def plot_labelled_events(json_path=None, save_dir=None, species=None,
-                         ylim_mag=None, dpi=150, skip_no_events=True):
+                         ylim_mag=None, dpi=150, skip_no_events=True, pad_sec=None,
+                         pad_from_partition=False, show_kt17=True, show_kt17_residual=None,
+                         figsize=(14, 5)):
     """Plot and save every reviewed orbit from the labelling JSON.
 
-    Uses the same layout as label_southward_orbits (show_kt17=True, FIPS).
+    Uses the same layout as label_southward_orbits (FIPS optional).
     One figure is saved per orbit that has at least one labelled event
     (or all reviewed orbits when skip_no_events=False).
 
@@ -1812,6 +2167,16 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
     ylim_mag        : (ymin, ymax) or None
     dpi             : int  — output resolution
     skip_no_events  : bool — skip orbits marked reviewed but with no events
+    pad_sec         : float or None — if given, crops the plotted window instead of
+                      showing the full current-sheet crossing segment. By default the
+                      window is [earliest event start - pad_sec, latest event stop + pad_sec];
+                      if pad_from_partition=True it is [earliest partition - pad_sec,
+                      latest partition + pad_sec] instead.
+    pad_from_partition : bool — see pad_sec above
+    show_kt17       : bool — overlay the dashed KT17 model field in the top mag panel
+    show_kt17_residual : bool or None — add the obs-minus-KT17 residual panel; defaults
+                      to show_kt17 (old behaviour) when left as None
+    figsize         : (width, height) passed through to plot_quick_look
     """
     import json as _json
 
@@ -1844,13 +2209,26 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
         seg = filter_orbit_segment(orb_df)
         if seg.empty:
             continue
-        seg = seg[seg['ephz'] > 0]
+        #seg = seg[seg['ephz'] > -0.5]
         if seg.empty:
             continue
 
-        fig = plot_quick_look(df=seg, orbit=orb, df_full=orb_df, species=sp,
-                              show_kt17=True, show_loading=False,
-                              ylim_mag=ylim_mag, _show=False)
+        if pad_sec is not None and events:
+            if pad_from_partition:
+                t_mid_lo = min(pd.Timestamp(ev.get('partition', ev['start'])) for ev in events)
+                t_mid_hi = max(pd.Timestamp(ev.get('partition', ev['stop']))  for ev in events)
+            else:
+                t_mid_lo = min(pd.Timestamp(ev['start']) for ev in events)
+                t_mid_hi = max(pd.Timestamp(ev['stop'])  for ev in events)
+            t_lo = t_mid_lo - pd.Timedelta(seconds=pad_sec)
+            t_hi = t_mid_hi + pd.Timedelta(seconds=pad_sec)
+            seg = seg[(pd.to_datetime(seg['time']) >= t_lo) & (pd.to_datetime(seg['time']) <= t_hi)]
+            if seg.empty:
+                continue
+
+        fig = plot_quick_look(df=seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
+                              show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
+                              show_loading=False, ylim_mag=ylim_mag, _show=False)
         fig.subplots_adjust(bottom=0.20)
 
         click_axes = fig._data_axes
@@ -1866,7 +2244,12 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
                 ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
 
         n_ev = len(events)
-        fig.suptitle(f'Orbit {orb}  —  {n_ev} labelled event(s)', fontsize=10)
+        date_str = pd.Timestamp(seg['time'].iloc[0]).strftime('%Y-%m-%d')
+        title = f'Orbit {orb}  —  {date_str}  —  {n_ev} labelled event(s)'
+        if events:
+            cats = ', '.join(ev.get('category', '?') for ev in events)
+            title += f'  —  type: {cats}'
+        fig.suptitle(title, fontsize=10)
 
         out_path = os.path.join(save_dir, f'orbit_{orb:05d}.png')
         fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
@@ -1877,8 +2260,395 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
     print(f'\nDone — {n_saved} figure(s) saved to {save_dir}')
 
 
+def sort_loading_type(json_path=None, species=None, ylim_mag=None, show_kt17=True,
+                      show_kt17_residual=None, partition_pad=None, only_undesignated=False,
+                      only_show_type=None, figsize=(14, 5)):
+    """
+    Interactive keyboard categorizer for labelled loading events.
+
+    Steps through every labelled substorm in json_path (same visual style as
+    plot_labelled_events), one event at a time, and waits for a keypress:
+        a  →  category 'a'
+        l  →  category 'l'
+        n  →  category 'n'
+    The category is written to the event's 'category' field and saved to
+    json_path immediately, then the next event is shown. Closing the figure
+    without pressing a/l/n leaves that event's category unchanged.
+
+    Parameters
+    ----------
+    json_path          : str or None — labelling JSON to read/write
+                         (default: human_loading_labels_new.json)
+    species            : list[str] or None — FIPS species overlay
+    ylim_mag           : (ymin, ymax) or None
+    show_kt17          : bool — overlay the dashed KT17 model field in the top mag panel
+    show_kt17_residual : bool or None — add the obs-minus-KT17 residual panel; defaults
+                         to show_kt17 (old behaviour) when left as None
+    partition_pad      : float or None — if given, window shown is [partition - partition_pad,
+                         partition + partition_pad] (seconds); if None (default), shows the
+                         entire labelled loading/unloading span [start, stop]
+    only_undesignated  : bool — if True, only show events with no category yet;
+                         if False, show every event (title shows its existing
+                         category, if any)
+    only_show_type     : str or None — if given ('a', 'l', or 'n'), only show events
+                         already categorized with that type; takes precedence over
+                         only_undesignated
+    figsize            : (width, height) passed through to plot_quick_look
+    """
+    import json as _json
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    def _write_json():
+        with open(json_path, 'w') as f:
+            _json.dump(labels, f, indent=2, sort_keys=True)
+
+    sp = tuple(species) if species else ()
+    _COLORS = {'start': 'limegreen', 'partition': 'orange', 'stop': 'red'}
+    _CATEGORY_KEYS = ('a', 'l', 'n')
+
+    queue = []
+    for orb_str, entry in sorted(labels.items(), key=lambda kv: int(kv[0])):
+        if not isinstance(entry, dict):
+            continue
+        for idx, ev in enumerate(entry.get('loading_events', [])):
+            if only_show_type is not None:
+                if ev.get('category') != only_show_type:
+                    continue
+            elif only_undesignated and ev.get('category'):
+                continue
+            queue.append((orb_str, idx))
+
+    print(f'{len(queue)} event(s) to review.  Press a / l / n to categorize each.')
+
+    orb_cache = {}
+    for orb_str, idx in queue:
+        orb = int(orb_str)
+        ev  = labels[orb_str]['loading_events'][idx]
+
+        if orb not in orb_cache:
+            try:
+                orb_cache[orb] = load_bowers_data_pkl(orbit_number=orb)
+            except Exception as exc:
+                print(f'Orbit {orb}: skipped ({exc})')
+                continue
+        orb_df = orb_cache[orb]
+
+        seg = filter_orbit_segment(orb_df)
+        if seg.empty:
+            continue
+
+        t_start = pd.Timestamp(ev['start'])
+        t_part  = pd.Timestamp(ev.get('partition', ev['start']))
+        t_stop  = pd.Timestamp(ev['stop'])
+
+        if partition_pad is not None:
+            t_lo = t_part - pd.Timedelta(seconds=partition_pad)
+            t_hi = t_part + pd.Timedelta(seconds=partition_pad)
+        else:
+            t_lo = t_start
+            t_hi = t_stop
+
+        plot_seg = seg
+        cropped = seg[(pd.to_datetime(seg['time']) >= t_lo) & (pd.to_datetime(seg['time']) <= t_hi)]
+        if not cropped.empty:
+            plot_seg = cropped
+
+        fig = plot_quick_look(df=plot_seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
+                              show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
+                              show_loading=False, ylim_mag=ylim_mag, _show=False)
+        fig.subplots_adjust(bottom=0.10)
+
+        for ax in fig._data_axes:
+            ax.axvspan(t_start, t_stop, color='green', alpha=0.15, zorder=2)
+            ax.axvline(t_start, color=_COLORS['start'],     lw=1.5, ls='-',  zorder=3)
+            ax.axvline(t_part,  color=_COLORS['partition'], lw=1.5, ls='--', zorder=3)
+            ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
+
+        n_events = len(labels[orb_str]['loading_events'])
+        cur_cat  = ev.get('category')
+        cat_str  = f'current: {cur_cat}' if cur_cat else 'unlabelled'
+        date_str = t_start.strftime('%Y-%m-%d')
+        fig.suptitle(
+            f'Orbit {orb}  —  {date_str}  —  event {idx + 1}/{n_events}  —  {cat_str}\n'
+            f'Press a / l / n to categorize', fontsize=10)
+
+        def on_key(event, orb_str=orb_str, ev=ev, fig=fig):
+            if event.key in _CATEGORY_KEYS:
+                ev['category'] = event.key
+                _write_json()
+                print(f'  Orbit {orb_str}: categorized as "{event.key}"')
+                plt.close(fig)
+
+        cid = fig.canvas.mpl_connect('key_press_event', on_key)
+        plt.show(block=True)
+        fig.canvas.mpl_disconnect(cid)
+
+    print('Done reviewing all queued events.')
+
+
+def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None,
+                        species=None, ylim_mag=None, show_kt17=True, show_kt17_residual=False,
+                        pad_sec=None, pad_from_partition=False, search_pad_sec=120,
+                        peak_window_sec=10, smooth_sec=1, figsize=(14, 5), dpi=150):
+    """
+    Measure how long Bz stays negative around an event's partition (unloading
+    onset) time before recovering to positive, for labelled events in the
+    given orbits.
+
+    For each qualifying event:
+      - finds the most negative (boxcar-smoothed) Bz sample within
+        peak_window_sec of the partition time — the negative-Bz peak
+      - finds the first sample after that peak where Bz has recovered to >= 0
+      - delay_sec = time from the peak to the recovery, written to the
+        event's 'bz_recovery_sec' field in json_path ('bz_recovery_time' and
+        'bz_negative_onset' timestamps are stored alongside it)
+      - saves a figure (same layout/lines as plot_labelled_events) with
+        purple vertical lines marking the Bz peak (dotted) and Bz>0
+        recovery (dash-dot), so the detection can be checked visually
+
+    Parameters
+    ----------
+    orbits          : list[int] or None — orbit numbers to process; if None (default),
+                      every orbit in json_path with at least one event matching
+                      `category` is used
+    json_path       : str or None — labelling JSON to read/write
+                      (default: human_loading_labels_new.json)
+    category        : str or None — only process events with this category
+                      (default 'a'); None processes every event regardless of category
+    save_dir        : str or None — defaults to <script_dir>/figures/bz_recovery/
+    species         : list[str] or None — FIPS species overlay
+    ylim_mag        : (ymin, ymax) or None
+    show_kt17       : bool — overlay the dashed KT17 model field in the top mag panel
+    show_kt17_residual : bool — add the obs-minus-KT17 residual panel (default False,
+                      unlike plot_labelled_events/sort_loading_type)
+    pad_sec         : float or None — crop the plotted window, as in plot_labelled_events
+    pad_from_partition : bool — if True (with pad_sec), window is centred on the
+                      partition time instead of [start, stop]
+    search_pad_sec  : float — how far past the event stop to keep searching for
+                      the recovery crossing (default 120s)
+    peak_window_sec : float — the negative-Bz peak is taken as the most negative
+                      sample within this many seconds before/after the partition
+                      time (default 10s)
+    smooth_sec      : boxcar smoothing window (s) used for the crossing detection —
+                      should match what you're inspecting visually (default 1)
+    figsize         : (width, height)
+    dpi             : output resolution
+
+    Returns a list of dicts: {'orbit', 'event_index', 'delay_sec'} (delay_sec
+    is None for events where no clean negative-to-positive crossing was found).
+    """
+    import json as _json
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+    if save_dir is None:
+        save_dir = os.path.join(_SCRIPT_DIR, 'figures', 'bz_recovery')
+    os.makedirs(save_dir, exist_ok=True)
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    def _write_json():
+        with open(json_path, 'w') as f:
+            _json.dump(labels, f, indent=2, sort_keys=True)
+
+    if orbits is None:
+        orbits = sorted(
+            int(orb_str) for orb_str, entry in labels.items()
+            if any(category is None or ev.get('category') == category
+                   for ev in entry.get('loading_events', []))
+        )
+
+    sp = tuple(species) if species else ()
+    _COLORS = {'start': 'limegreen', 'partition': 'orange', 'stop': 'red'}
+
+    results = []
+    for orb in orbits:
+        orb_str = str(orb)
+        entry = labels.get(orb_str, {})
+        events = entry.get('loading_events', [])
+
+        try:
+            orb_df = load_bowers_data_pkl(orbit_number=orb)
+        except Exception as exc:
+            print(f'Orbit {orb}: skipped ({exc})')
+            continue
+
+        seg = filter_orbit_segment(orb_df)
+        if seg.empty:
+            continue
+
+        for idx, ev in enumerate(events):
+            if category is not None and ev.get('category') != category:
+                continue
+
+            t_start = pd.Timestamp(ev['start'])
+            t_part  = pd.Timestamp(ev.get('partition', ev['start']))
+            t_stop  = pd.Timestamp(ev['stop'])
+            search_hi = t_stop + pd.Timedelta(seconds=search_pad_sec)
+
+            if pad_from_partition and pad_sec is not None:
+                t_lo, t_hi = t_part - pd.Timedelta(seconds=pad_sec), t_part + pd.Timedelta(seconds=pad_sec)
+            elif pad_sec is not None:
+                t_lo, t_hi = t_start - pd.Timedelta(seconds=pad_sec), t_stop + pd.Timedelta(seconds=pad_sec)
+            else:
+                t_lo, t_hi = t_start, t_stop
+            t_hi = max(t_hi, search_hi)   # always show enough to see the recovery crossing
+
+            t_seg = pd.to_datetime(seg['time'])
+            plot_seg = seg[(t_seg >= t_lo) & (t_seg <= t_hi)]
+            if plot_seg.empty:
+                print(f'Orbit {orb} event {idx}: no data in window, skipping')
+                continue
+
+            t_arr = pd.to_datetime(plot_seg['time']).to_numpy()
+            dt_s  = float(np.median(np.diff(t_arr).astype('timedelta64[ns]').astype(float) / 1e9)) if len(t_arr) > 1 else 1.0
+            win   = int(round(smooth_sec / dt_s)) if smooth_sec else 1
+            magz  = plot_seg['magz'].to_numpy().astype(float)
+            if win > 1:
+                kernel = np.ones(win) / win
+                pad = win // 2
+                Bz = np.convolve(np.pad(magz, pad, mode='reflect'), kernel, mode='valid')[:len(magz)]
+            else:
+                Bz = magz
+
+            peak_lo = np.datetime64(t_part - pd.Timedelta(seconds=peak_window_sec))
+            peak_hi = np.datetime64(t_part + pd.Timedelta(seconds=peak_window_sec))
+            peak_mask = (t_arr >= peak_lo) & (t_arr <= peak_hi)
+            peak_idxs = np.where(peak_mask)[0]
+
+            delay_sec = None
+            t_neg = t_pos = None
+            if peak_idxs.size == 0:
+                print(f'Orbit {orb} event {idx}: no data within {peak_window_sec}s of partition, skipping')
+            else:
+                idx_neg = peak_idxs[np.argmin(Bz[peak_idxs])]
+                if Bz[idx_neg] >= 0:
+                    print(f'Orbit {orb} event {idx}: Bz never went negative near partition, skipping')
+                else:
+                    rec_mask = (t_arr >= t_arr[idx_neg]) & (t_arr <= np.datetime64(search_hi)) & (Bz >= 0)
+                    rec_candidates = np.where(rec_mask)[0]
+                    rec_candidates = rec_candidates[rec_candidates > idx_neg]
+                    if rec_candidates.size == 0:
+                        print(f'Orbit {orb} event {idx}: Bz did not recover to positive within the search window')
+                    else:
+                        idx_pos = rec_candidates[0]
+                        t_neg = pd.Timestamp(t_arr[idx_neg])
+                        t_pos = pd.Timestamp(t_arr[idx_pos])
+                        delay_sec = (t_pos - t_neg).total_seconds()
+
+                        ev['bz_recovery_sec']    = delay_sec
+                        ev['bz_recovery_time']   = t_pos.isoformat()
+                        ev['bz_negative_onset']  = t_neg.isoformat()
+                        _write_json()
+                        print(f'Orbit {orb} event {idx}: Bz negative -> positive in {delay_sec:.1f} s')
+
+            results.append({'orbit': orb, 'event_index': idx, 'delay_sec': delay_sec})
+
+            fig = plot_quick_look(df=plot_seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
+                                  show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
+                                  show_loading=False, ylim_mag=ylim_mag, _show=False)
+            for ax in fig._data_axes:
+                ax.axvspan(t_start, t_stop, color='green', alpha=0.15, zorder=2)
+                ax.axvline(t_start, color=_COLORS['start'],     lw=1.5, ls='-',  zorder=3)
+                ax.axvline(t_part,  color=_COLORS['partition'], lw=1.5, ls='--', zorder=3)
+                ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
+                if t_neg is not None:
+                    ax.axvline(t_neg, color='purple', lw=1.5, ls=':',  zorder=4, label='Bz peak')
+                if t_pos is not None:
+                    ax.axvline(t_pos, color='purple', lw=1.5, ls='-.', zorder=4, label='Bz > 0')
+
+            date_str = t_start.strftime('%Y-%m-%d')
+            cat_str  = ev.get('category', '?')
+            delay_str = f'{delay_sec:.1f} s' if delay_sec is not None else 'not found'
+            fig.suptitle(f'Orbit {orb}  —  {date_str}  —  event {idx}  —  type: {cat_str}  —  '
+                        f'Bz recovery: {delay_str}', fontsize=10)
+
+            out_path = os.path.join(save_dir, f'orbit_{orb:05d}_ev{idx}.png')
+            fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
+            plt.close(fig)
+
+    print(f'\nDone — processed {len(results)} event(s).')
+    return results
+
+
+_SIM_EPOCH = pd.Timestamp('2000-01-01T00:00:00')
+
+def load_simulation_json(path, t_start_s=None, t_stop_s=None, t_partition_s=None):
+    """Load a simulation JSON file and return (DataFrame, label_entry) for plot_fac_events.
+
+    The JSON must contain 'times' (seconds), 'Bx', 'By', 'Bz'.
+    Position (x, y, z) is parsed from the filename, e.g. x-1.1_y0_z0.5_...
+
+    Parameters
+    ----------
+    path          : str   path to simulation JSON file
+    t_start_s     : float or None   start time in seconds (default: first sample)
+    t_stop_s      : float or None   stop  time in seconds (default: last sample)
+    t_partition_s : float or None   partition time in seconds (default: midpoint)
+
+    Returns
+    -------
+    df    : pd.DataFrame  with columns time, magx, magy, magz, ephx, ephy, ephz
+    label : dict          label_entry compatible with plot_fac_events sim_data
+    """
+    import json as _json, re
+
+    with open(path) as f:
+        raw = _json.load(f)
+
+    times = np.array(raw['times'], dtype=float)
+    Bx    = np.array(raw['Bx'],    dtype=float)
+    By    = np.array(raw['By'],    dtype=float)
+    Bz    = np.array(raw['Bz'],    dtype=float)
+
+    # parse x, y, z from filename  e.g. x-1.1_y0_z0.5_t90_to_150
+    fname = os.path.basename(path)
+    def _parse_coord(axis):
+        m = re.search(rf'{axis}(-?[\d.]+)', fname)
+        return float(m.group(1)) if m else 0.0
+    x_pos = _parse_coord('x')
+    y_pos = _parse_coord('y')
+    z_pos = _parse_coord('z')
+
+    # apply time window
+    t0  = t_start_s     if t_start_s     is not None else times[0]
+    t1  = t_stop_s      if t_stop_s      is not None else times[-1]
+    t_p = t_partition_s if t_partition_s is not None else 0.5 * (t0 + t1)
+
+    mask   = (times >= t0) & (times <= t1)
+    times  = times[mask]
+    Bx, By, Bz = Bx[mask], By[mask], Bz[mask]
+
+    timestamps = _SIM_EPOCH + pd.to_timedelta(times, unit='s')
+
+    df = pd.DataFrame({
+        'time': timestamps,
+        'magx': Bx, 'magy': By, 'magz': Bz,
+        'ephx': x_pos, 'ephy': y_pos, 'ephz': z_pos,
+    })
+
+    def _to_iso(t_s):
+        return (_SIM_EPOCH + pd.to_timedelta(t_s, unit='s')).isoformat()
+
+    label = {
+        'start':     _to_iso(t0),
+        'partition': _to_iso(t_p),
+        'stop':      _to_iso(t1),
+        'reviewed':  True,
+    }
+    return df, label
+
+
 def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
-                    b0_ref='start', bpar_smooth_sec=1, smooth_sec=0):
+                    b0_ref='start', bpar_smooth_sec=1, smooth_sec=0,
+                    n_lon_bins=18, n_lat_bins=12, label_events=False,
+                    show_wavelet=False, sim_data=None):
     """Plot each labelled event in field-aligned coordinates (FAC).
 
     The FAC frame is fixed at a single reference field direction B0.  The three
@@ -1916,22 +2686,44 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
     with open(json_path) as f:
         labels = _json.load(f)
 
+    # merge simulation entries into the label dict
+    _sim_dfs = {}   # key -> DataFrame for sim entries
+    if sim_data:
+        for sim_key, (sim_df, sim_label) in sim_data.items():
+            labels[sim_key] = {
+                'reviewed': True,
+                'loading_events': [sim_label],
+            }
+            _sim_dfs[sim_key] = sim_df
+
     _letters = 'abcdefghijklmnopqrstuvwxyz'
     n_saved = 0
+    event_agg = []   # per-event: mean lon/lat + mean dB_phi over unloading window
 
-    for orb_str, entry in sorted(labels.items(), key=lambda kv: int(kv[0])):
+    def _sort_key(kv):
+        try:
+            return (0, int(kv[0]))
+        except ValueError:
+            return (1, kv[0])
+
+    for orb_str, entry in sorted(labels.items(), key=_sort_key):
         if not entry.get('reviewed', False):
             continue
         events = entry.get('loading_events', [])
         if skip_no_events and not events:
             continue
 
-        orb = int(orb_str)
-        try:
-            orb_df = load_bowers_data_pkl(orbit_number=orb)
-        except Exception as exc:
-            print(f'Orbit {orb}: skipped ({exc})')
-            continue
+        if orb_str in _sim_dfs:
+            orb_df  = _sim_dfs[orb_str]
+            is_sim  = True
+        else:
+            orb = int(orb_str)
+            try:
+                orb_df = load_bowers_data_pkl(orbit_number=orb)
+            except Exception as exc:
+                print(f'Orbit {orb}: skipped ({exc})')
+                continue
+            is_sim = False
 
         t_orb = pd.to_datetime(orb_df['time'])
 
@@ -1974,8 +2766,9 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
                 rx, ry, rz,
             )
 
-            _, Bxkt, Bykt, Bzkt = get_kt17_along_track(df=seg)
-            Bmagkt = np.sqrt(Bxkt**2 + Bykt**2 + Bzkt**2)
+            if not is_sim:
+                _, Bxkt, Bykt, Bzkt = get_kt17_along_track(df=seg)
+                Bmagkt = np.sqrt(Bxkt**2 + Bykt**2 + Bzkt**2)
 
             # per-component boxcar smooth (smooth_sec mode)
             if smooth_sec > 0 and len(B_par) > 2:
@@ -1990,6 +2783,22 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
                 sm_norm = _sm(B_norm)
             else:
                 sm_par = sm_phi = sm_norm = None
+
+            # aggregate mean dB_phi over the unloading window for summary figures
+            if sm_phi is not None:
+                unload_mask = (t_seg >= t_part).to_numpy()
+                if unload_mask.sum() > 0:
+                    r_u   = np.sqrt(rx[unload_mask]**2 + ry[unload_mask]**2 + rz[unload_mask]**2)
+                    lon_u = np.degrees(np.arctan2(ry[unload_mask], rx[unload_mask])) % 360
+                    lat_u = np.degrees(np.arcsin(np.clip(rz[unload_mask] / r_u, -1, 1)))
+                    dBphi_u = (B_phi - sm_phi)[unload_mask]
+                    suffix = _letters[ev_idx] if len(events) > 1 else ''
+                    event_agg.append({
+                        'lon': float(np.nanmean(lon_u)),
+                        'lat': float(np.nanmean(lat_u)),
+                        'val': float(np.nanmean(dBphi_u)),
+                        'key': f'{orb}{suffix}',
+                    })
 
             # unit vectors at the reference point for title annotation
             R0      = np.array([rx[i0], ry[i0], rz[i0]])
@@ -2034,51 +2843,40 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
                     ax.plot(t_seg, _sm_by_key[key], color='k', lw=1.4, ls='--', alpha=0.8,
                             label=f'{smooth_sec}s smooth')
                     ax.legend(fontsize=7, loc='upper right')
-                if key == 'par' and B_par_sm is not None:
-                    ax.plot(t_seg, B_par_sm, color='black', lw=1.2, ls='--', alpha=0.8,
-                            label=f'smoothed ({bpar_smooth_sec}s)')
-                    ax.legend(fontsize=7, loc='upper right')
                 if np.nanmin(data) <= 0 <= np.nanmax(data):
                     ax.axhline(0, color='k', lw=0.4, alpha=0.4)
                 ax.axvline(t_part, color='grey', lw=1.2, ls='--', alpha=0.7)
                 ax.set_ylabel(f'{lbl} (nT)', fontsize=9)
                 ax.grid(True, alpha=0.3)
 
-                if B_par_sm is not None and key != 'par':
-                    ok = np.isfinite(B_par_sm) & np.isfinite(data)
-                    if ok.sum() > 2:
-                        bp0       = B_par_sm[i_part]
-                        d0        = data[i_part]
-                        dBp       = (B_par_sm - bp0)[ok]
-                        dD        = (data      - d0)[ok]
-                        denom     = float(dBp @ dBp)
-                        slope     = float(dBp @ dD) / denom if denom != 0 else 0.0
-                        intercept = d0 - slope * bp0
-                        fit_line  = slope * B_par_sm + intercept
-                        fit_lines[key] = (fit_line, slope, intercept)
-                        ax.plot(t_seg, fit_line, color='k', lw=1.0, ls='--', alpha=0.7)
-                        ax.text(0.98, 0.05,
-                                f'scale={slope:.3f}\noffset={intercept:.2f} nT',
-                                transform=ax.transAxes, fontsize=7,
-                                ha='right', va='bottom',
-                                bbox=dict(boxstyle='round,pad=0.3',
-                                          facecolor='white', alpha=0.7,
-                                          edgecolor='grey'))
-
-            ax_norm.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            if is_sim:
+                # show elapsed seconds instead of clock time
+                import matplotlib.ticker as _mticker, datetime as _dt
+                _epoch_aware = _SIM_EPOCH.to_pydatetime().replace(tzinfo=_dt.timezone.utc)
+                ax_norm.xaxis.set_major_formatter(
+                    _mticker.FuncFormatter(
+                        lambda x, _, _ep=_epoch_aware: f'{(mdates.num2date(x) - _ep).total_seconds():.0f}s'))
+                ax_norm.set_xlabel('Time (s)', fontsize=9)
+            else:
+                ax_norm.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
             fig.autofmt_xdate(rotation=30, ha='right')
             suffix = _letters[ev_idx] if len(events) > 1 else ''
-            b0_label = 'partition' if b0_ref == 'partition' else 'start'
+            b0_label  = 'partition' if b0_ref == 'partition' else 'start'
+            orb_label = orb_str if is_sim else f'Orbit {orb_str}'
+            if is_sim:
+                time_label = f't={t_start.second + (t_start - _SIM_EPOCH).total_seconds():.0f}–{t_stop.second + (t_stop - _SIM_EPOCH).total_seconds():.0f}s'
+            else:
+                time_label = f'{t_start.strftime("%Y-%m-%d %H:%M")} – {t_stop.strftime("%H:%M")} UTC'
             fig.suptitle(
-                f'Orbit {orb}{suffix}  —  FAC (ref: {b0_label})  '
-                f'({t_start.strftime("%Y-%m-%d %H:%M")} – {t_stop.strftime("%H:%M")} UTC)\n'
+                f'{orb_label}{suffix}  —  FAC (ref: {b0_label})  ({time_label})\n'
                 f'$\\hat{{b}}_{{\\parallel}}$={_fmtvec(b0n)}  '
                 f'$\\hat{{b}}_{{\\phi}}$={_fmtvec(phi_h)}  '
                 f'$\\hat{{b}}_{{\\perp}}$={_fmtvec(perp_h)}',
                 fontsize=8)
             fig.tight_layout()
 
-            fname = f'orbit_{orb:05d}{suffix}.png'
+            orb_tag = orb_str if is_sim else f'{orb:05d}'
+            fname = f'orbit_{orb_tag}{suffix}.png'
             out_path = os.path.join(save_dir, fname)
             fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
             plt.close(fig)
@@ -2098,19 +2896,26 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
                 fig2, axes2 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
                 for ax2, (resid, color, lbl2) in zip(axes2, diff_data):
                     ax2.plot(t_seg, resid, color=color, lw=0.9)
-                    if np.nanmin(resid) <= 0 <= np.nanmax(resid):
-                        ax2.axhline(0, color='k', lw=0.4, alpha=0.4)
+                    ax2.axhline(0, color='k', lw=0.4, alpha=0.4)
                     ax2.axvline(t_part, color='grey', lw=1.2, ls='--', alpha=0.7)
+                    ax2.set_ylim(-6, 6)
                     ax2.set_ylabel(f'{lbl2} (nT)', fontsize=9)
                     ax2.grid(True, alpha=0.3)
-                axes2[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                if is_sim:
+                    import matplotlib.ticker as _mticker, datetime as _dt
+                    _epoch_aware = _SIM_EPOCH.to_pydatetime().replace(tzinfo=_dt.timezone.utc)
+                    axes2[-1].xaxis.set_major_formatter(
+                        _mticker.FuncFormatter(
+                            lambda x, _, _ep=_epoch_aware: f'{(mdates.num2date(x) - _ep).total_seconds():.0f}s'))
+                else:
+                    axes2[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
                 fig2.autofmt_xdate(rotation=30, ha='right')
                 fig2.suptitle(
-                    f'Orbit {orb}{suffix}  —  FAC residuals ({smooth_sec}s avg removed)  '
-                    f'({t_start.strftime("%Y-%m-%d %H:%M")} – {t_stop.strftime("%H:%M")} UTC)',
+                    f'{orb_label}{suffix}  —  FAC residuals ({smooth_sec}s avg removed)  '
+                    f'({time_label})',
                     fontsize=9)
                 fig2.tight_layout()
-                fname2    = f'orbit_{orb:05d}{suffix}_diff.png'
+                fname2    = f'orbit_{orb_tag}{suffix}_diff.png'
                 out_path2 = os.path.join(save_dir, fname2)
                 fig2.savefig(out_path2, dpi=dpi, bbox_inches='tight')
                 plt.close(fig2)
@@ -2126,28 +2931,167 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
                 fig2, axes2 = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
                 for ax2, (resid, color, lbl) in zip(axes2, diff_data):
                     ax2.plot(t_seg, resid, color=color, lw=0.9)
-                    if np.nanmin(resid) <= 0 <= np.nanmax(resid):
-                        ax2.axhline(0, color='k', lw=0.4, alpha=0.4)
+                    ax2.axhline(0, color='k', lw=0.4, alpha=0.4)
                     ax2.axvline(t_part, color='grey', lw=1.2, ls='--', alpha=0.7)
+                    ax2.set_ylim(-6, 6)
                     ax2.set_ylabel(f'{lbl} (nT)', fontsize=9)
                     ax2.grid(True, alpha=0.3)
-                axes2[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                if is_sim:
+                    import matplotlib.ticker as _mticker, datetime as _dt
+                    _epoch_aware = _SIM_EPOCH.to_pydatetime().replace(tzinfo=_dt.timezone.utc)
+                    axes2[-1].xaxis.set_major_formatter(
+                        _mticker.FuncFormatter(
+                            lambda x, _, _ep=_epoch_aware: f'{(mdates.num2date(x) - _ep).total_seconds():.0f}s'))
+                else:
+                    axes2[-1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
                 fig2.autofmt_xdate(rotation=30, ha='right')
                 fig2.suptitle(
-                    f'Orbit {orb}{suffix}  —  FAC residuals  '
-                    f'({t_start.strftime("%Y-%m-%d %H:%M")} – {t_stop.strftime("%H:%M")} UTC)',
+                    f'{orb_label}{suffix}  —  FAC residuals  '
+                    f'({time_label})',
                     fontsize=9)
                 fig2.tight_layout()
-                fname2    = f'orbit_{orb:05d}{suffix}_diff.png'
+                fname2    = f'orbit_{orb_tag}{suffix}_diff.png'
                 out_path2 = os.path.join(save_dir, fname2)
                 fig2.savefig(out_path2, dpi=dpi, bbox_inches='tight')
                 plt.close(fig2)
                 print(f'  Saved: {out_path2}')
 
+            # ── wavelet spectrogram figure ────────────────────────────────
+            if show_wavelet and len(t_seg) > 20:
+                scales    = np.power(2, np.linspace(1, 7, 500))
+                bandwidth = 6.0
+                ut = t_seg.values   # numpy datetime64 array
+
+                time_w, freq_w, _, psd_bt,  _ = wavelet_coef_psd(ut, Bmag,  scales, bandwidth)
+                _,      _,      _, psd_phi, _ = wavelet_coef_psd(ut, B_phi-sm_phi, scales, bandwidth)
+
+                # cone of influence — boundary frequency as a function of time
+                t_s     = (time_w - time_w[0]).astype(float) / 1e9        # seconds from start
+                t_end_s = (time_w[-1] - time_w).astype(float) / 1e9       # seconds from end
+                d_s     = np.maximum(np.minimum(t_s, t_end_s), 1e-10)
+                coi_freq_t = np.clip(np.sqrt(2) * bandwidth / (2 * np.pi) / d_s,
+                                     freq_w[0], freq_w[-1])
+
+                fig3, (ax3a, ax3b) = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+                for ax3, psd, title in [
+                    (ax3a, psd_bt,  '|B| (nT²/Hz)'),
+                    (ax3b, psd_phi, '$B_\\phi$ (nT²/Hz)'),
+                ]:
+                    pc = ax3.pcolormesh(time_w, freq_w, np.log10(np.clip(psd, 1e-6, None)),
+                                        cmap='nipy_spectral', vmin=-2, vmax=3, shading='auto')
+                    ax3.fill_between(time_w, freq_w[0], coi_freq_t,
+                                     color='white', alpha=0.35, zorder=3)
+                    ax3.axvline(t_part, color='white', lw=1.2, ls='--', alpha=0.8, zorder=4)
+                    ax3.set_yscale('log')
+                    ax3.set_ylabel('Frequency (Hz)', fontsize=9)
+                    ax3.set_title(title, fontsize=9, loc='left')
+                    ax3.grid(True, alpha=0.2, color='white')
+                    plt.colorbar(pc, ax=ax3, label='log₁₀ PSD', pad=0.01)
+
+                if is_sim:
+                    import matplotlib.ticker as _mticker, datetime as _dt
+                    _epoch_aware = _SIM_EPOCH.to_pydatetime().replace(tzinfo=_dt.timezone.utc)
+                    ax3b.xaxis.set_major_formatter(
+                        _mticker.FuncFormatter(
+                            lambda x, _, _ep=_epoch_aware: f'{(mdates.num2date(x) - _ep).total_seconds():.0f}s'))
+                else:
+                    ax3b.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                fig3.autofmt_xdate(rotation=30, ha='right')
+                fig3.suptitle(
+                    f'{orb_label}{suffix}  —  wavelet spectrogram  '
+                    f'({time_label})',
+                    fontsize=9)
+                fig3.tight_layout()
+                fname3    = f'orbit_{orb_tag}{suffix}_wavelet.png'
+                out_path3 = os.path.join(save_dir, fname3)
+                fig3.savefig(out_path3, dpi=dpi, bbox_inches='tight')
+                plt.close(fig3)
+                print(f'  Saved: {out_path3}')
+
     print(f'\nDone — {n_saved} FAC figure(s) saved to {save_dir}')
 
+    if not event_agg:
+        return
 
-def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
+    from matplotlib.collections import LineCollection
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    agg_lons = np.array([e['lon'] for e in event_agg])
+    agg_lats = np.array([e['lat'] for e in event_agg])
+    agg_vals = np.array([e['val'] for e in event_agg])
+
+    abs_max  = max(abs(agg_vals.min()), abs(agg_vals.max()))
+    norm_agg = Normalize(vmin=-abs_max, vmax=abs_max)
+    cmap_agg = plt.cm.bwr
+    clabel   = r'$\langle\delta B_\phi\rangle$ (nT)'
+    phase_tag = f'{smooth_sec}s avg removed'
+
+    # --- scatter in lon/lat ---
+    fig_sc, ax_sc = plt.subplots(figsize=(10, 5))
+    ax_sc.scatter(agg_lons, agg_lats, c=agg_vals, cmap=cmap_agg, norm=norm_agg,
+                  s=60, zorder=3, edgecolors='k', lw=0.5)
+    if label_events:
+        for e in event_agg:
+            ax_sc.text(e['lon'], e['lat'], e['key'],
+                       fontsize=6, ha='left', va='bottom', alpha=0.8, clip_on=True)
+    ax_sc.set_xlim(90, 270)
+    ax_sc.set_ylim(-90, 90)
+    ax_sc.set_xlabel('East Longitude (°)')
+    ax_sc.set_ylabel('Latitude (°)')
+    ax_sc.axhline(0, color='k', lw=0.4, alpha=0.3)
+    ax_sc.grid(True, alpha=0.2)
+    sm_sc = ScalarMappable(cmap=cmap_agg, norm=norm_agg)
+    sm_sc.set_array([])
+    fig_sc.colorbar(sm_sc, ax=ax_sc, label=clabel)
+    fig_sc.suptitle(
+        f'Mean $\\delta B_\\phi$ (unloading)  —  {phase_tag}  '
+        f'({len(event_agg)} events)', fontsize=11)
+    fig_sc.tight_layout()
+    fig_sc.savefig(os.path.join(save_dir, f'dBphi_scatter_{smooth_sec}s.png'),
+                   dpi=dpi, bbox_inches='tight')
+    plt.show()
+
+    # --- binned map in lon/lat ---
+    lon_edges = np.linspace(90, 270, n_lon_bins + 1)
+    lat_edges = np.linspace(-90, 90, n_lat_bins + 1)
+    LON, LAT  = np.meshgrid(lon_edges, lat_edges)
+
+    b_sum   = np.zeros((n_lat_bins, n_lon_bins))
+    b_count = np.zeros((n_lat_bins, n_lon_bins), dtype=int)
+    for lon_v, lat_v, val_v in zip(agg_lons, agg_lats, agg_vals):
+        i = int(np.searchsorted(lon_edges, lon_v, side='right') - 1)
+        j = int(np.searchsorted(lat_edges, lat_v, side='right') - 1)
+        if 0 <= i < n_lon_bins and 0 <= j < n_lat_bins:
+            b_sum[j, i]   += val_v
+            b_count[j, i] += 1
+    b_mean = np.where(b_count > 0, b_sum / b_count, np.nan)
+
+    fig_bin, ax_bin = plt.subplots(figsize=(10, 5))
+    pm = ax_bin.pcolormesh(LON, LAT, b_mean, cmap=cmap_agg, norm=norm_agg, shading='flat')
+    for i in range(n_lon_bins):
+        for j in range(n_lat_bins):
+            if b_count[j, i] > 0:
+                cx = 0.5 * (lon_edges[i] + lon_edges[i + 1])
+                cy = 0.5 * (lat_edges[j] + lat_edges[j + 1])
+                ax_bin.text(cx, cy, str(b_count[j, i]),
+                            ha='center', va='center', fontsize=7, color='k')
+    ax_bin.set_xlim(90, 270)
+    ax_bin.set_ylim(-90, 90)
+    ax_bin.set_xlabel('East Longitude (°)')
+    ax_bin.set_ylabel('Latitude (°)')
+    ax_bin.grid(True, alpha=0.2)
+    fig_bin.colorbar(pm, ax=ax_bin, label=clabel)
+    fig_bin.suptitle(
+        f'Binned mean $\\delta B_\\phi$ (unloading)  —  {phase_tag}  '
+        f'({n_lon_bins}×{n_lat_bins} bins, count labelled)', fontsize=11)
+    fig_bin.tight_layout()
+    fig_bin.savefig(os.path.join(save_dir, f'dBphi_binned_{smooth_sec}s.png'),
+                    dpi=dpi, bbox_inches='tight')
+    plt.show()
+
+
+def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by_category=False):
     """Plot YZ and lon/lat trajectory maps for a list of labelled events.
 
     If event_keys is None or empty, all events in the JSON are shown.
@@ -2158,6 +3102,10 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
     json_path   : str or None  defaults to human_loading_labels_new.json
     color_by_alt: bool  colour each segment by altitude (R_M above surface)
                         instead of a distinct colour per event
+    color_by_category : bool  colour by the event's sort_loading_type category
+                        ('a' or 'l') instead of a distinct colour per event;
+                        events categorized 'n' are hidden, and uncategorized
+                        events are skipped. Takes precedence over color_by_alt.
     """
     import json as _json
     from matplotlib.collections import LineCollection
@@ -2180,15 +3128,41 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
                 suffix = _letters[i] if len(evs) > 1 else ''
                 event_keys.append(f'{orb_str}{suffix}')
 
-    fig, (ax_yz, ax_ll) = plt.subplots(1, 2, figsize=(12, 5))
-    event_cmap = plt.cm.tab10
-    event_colors = [event_cmap(i % 10) for i in range(len(event_keys))]
+    def _resolve(key):
+        """key -> (orb, event_dict) or (orb, None) if not found."""
+        key = str(key).strip()
+        if key[-1].isalpha():
+            orb, ev_idx = int(key[:-1]), _letters.index(key[-1])
+        else:
+            orb, ev_idx = int(key), 0
+        events = labels.get(str(orb), {}).get('loading_events', [])
+        return orb, (events[ev_idx] if ev_idx < len(events) else None)
+
+    _CATEGORY_COLORS = {'a': 'tab:red', 'l': 'tab:blue'}
+
+    if color_by_category:
+        filtered_keys = []
+        event_colors  = []
+        for key in event_keys:
+            _, ev = _resolve(key)
+            cat = ev.get('category') if ev else None
+            if cat not in _CATEGORY_COLORS:   # drops 'n', missing, and unresolved keys
+                continue
+            filtered_keys.append(key)
+            event_colors.append(_CATEGORY_COLORS[cat])
+        event_keys = filtered_keys
+    else:
+        event_cmap   = plt.cm.tab10
+        event_colors = [event_cmap(i % 10) for i in range(len(event_keys))]
+
+    fig, (ax_xz, ax_yz, ax_ll) = plt.subplots(1, 3, figsize=(18, 5))
 
     alt_cmap = plt.cm.plasma
     all_alts = []   # collected to set shared norm after first pass
+    color_by_alt = color_by_alt and not color_by_category
 
     # two-pass when color_by_alt: first collect all altitudes, then plot
-    segments_yz, segments_ll, seg_alts = [], [], []
+    segments_xz, segments_yz, segments_ll, seg_alts = [], [], [], []
 
     for ev_color, key in zip(event_colors, event_keys):
         key = str(key).strip()
@@ -2230,14 +3204,19 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
         lon = np.degrees(np.arctan2(Y, X)) % 360
 
         if color_by_alt:
+            segments_xz.append((X, Z, alt))
             segments_yz.append((Y, Z, alt))
             segments_ll.append((lon, lat, alt))
             all_alts.append(alt)
         else:
-            ax_yz.plot(Y, Z, color=ev_color, lw=1.5, label=key)
+            label = ev.get('category') if color_by_category else key
+            ax_xz.plot(X, Z, color=ev_color, lw=1.5, label=label)
+            ax_xz.scatter(X[0],  Z[0],  color=ev_color, marker='o', s=20, zorder=5)
+            ax_xz.scatter(X[-1], Z[-1], color=ev_color, marker='s', s=20, zorder=5)
+            ax_yz.plot(Y, Z, color=ev_color, lw=1.5, label=label)
             ax_yz.scatter(Y[0],  Z[0],  color=ev_color, marker='o', s=20, zorder=5)
             ax_yz.scatter(Y[-1], Z[-1], color=ev_color, marker='s', s=20, zorder=5)
-            ax_ll.plot(lon, lat, color=ev_color, lw=1.5, label=key)
+            ax_ll.plot(lon, lat, color=ev_color, lw=1.5, label=label)
             ax_ll.scatter(lon[0],  lat[0],  color=ev_color, marker='o', s=20, zorder=5)
             ax_ll.scatter(lon[-1], lat[-1], color=ev_color, marker='s', s=20, zorder=5)
 
@@ -2253,6 +3232,8 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
             ax.add_collection(lc)
             return lc
 
+        for X, Z, alt in segments_xz:
+            _add_lc(ax_xz, X, Z, alt)
         for Y, Z, alt in segments_yz:
             _add_lc(ax_yz, Y, Z, alt)
         for lon, lat, alt in segments_ll:
@@ -2260,11 +3241,24 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
 
         sm = ScalarMappable(cmap=alt_cmap, norm=norm)
         sm.set_array([])
-        fig.colorbar(sm, ax=[ax_yz, ax_ll], label='Altitude (R$_M$)',
+        fig.colorbar(sm, ax=[ax_xz, ax_yz, ax_ll], label='Altitude (R$_M$)',
                      fraction=0.02, pad=0.02)
 
-    # YZ panel — Mercury outline (MSM: planet centre at Z = -0.2 R_M)
+    # XZ panel — Mercury outline (MSM: planet centre at Z = -0.2 R_M)
     theta = np.linspace(0, 2 * np.pi, 300)
+    ax_xz.fill(np.cos(theta), -0.2 + np.sin(theta),
+               color='saddlebrown', alpha=0.3, zorder=0)
+    ax_xz.plot(np.cos(theta), -0.2 + np.sin(theta),
+               color='saddlebrown', lw=1, zorder=1)
+    ax_xz.set_xlabel('X$_{MSM}$ (R$_M$)')
+    ax_xz.set_ylabel('Z$_{MSM}$ (R$_M$)')
+    ax_xz.set_aspect('equal')
+    ax_xz.axhline(0, color='k', lw=0.4, alpha=0.3)
+    ax_xz.axvline(0, color='k', lw=0.4, alpha=0.3)
+    ax_xz.grid(True, alpha=0.2)
+    ax_xz.invert_xaxis()
+
+    # YZ panel — Mercury outline (MSM: planet centre at Z = -0.2 R_M)
     ax_yz.fill(np.cos(theta), -0.2 + np.sin(theta),
                color='saddlebrown', alpha=0.3, zorder=0)
     ax_yz.plot(np.cos(theta), -0.2 + np.sin(theta),
@@ -2285,7 +3279,17 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
     ax_ll.axhline(0, color='k', lw=0.4, alpha=0.3)
     ax_ll.grid(True, alpha=0.2)
 
-    if len(event_keys) <= 8:
+    def _dedup_legend(ax):
+        handles, labels = ax.get_legend_handles_labels()
+        seen = dict(zip(labels, handles))   # keeps one handle per unique label
+        ax.legend(seen.values(), seen.keys(), fontsize=8)
+
+    if color_by_category:
+        _dedup_legend(ax_xz)
+        _dedup_legend(ax_yz)
+        _dedup_legend(ax_ll)
+    elif len(event_keys) <= 8:
+        ax_xz.legend(fontsize=8)
         ax_yz.legend(fontsize=8)
         ax_ll.legend(fontsize=8)
 
@@ -2296,12 +3300,31 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False):
     fig.savefig(os.path.join(_fig_dir, 'event_map.png'), dpi=150, bbox_inches='tight')
     plt.show()
 
-#browse_southward_orbits(2800, 2850, species=['H+'])
-#label_southward_orbits(3500, 3700, species=["H+"])
-#plot_labelled_events(species=['H+'])
-plot_fac_events(b0_ref='start')
+#browse_southward_orbits(1200, 2000, species=['H+'])
+#label_southward_orbits(944, 946, species=["H+"],json_path="equatorial_events.json", direction='south')
+
+#plot_labelled_events(species=['H+'],json_path="equatorial_events.json", pad_sec=90, show_kt17=True, pad_from_partition=True, show_kt17_residual=False, figsize = (7,8))
+
+measure_bz_recovery(json_path="equatorial_events.json", species=['H+'])
+#sort_loading_type(json_path="equatorial_events.json", species=["H+"], only_undesignated=False, partition_pad=30, show_kt17_residual=False, figsize = (12,8),only_show_type='a')
+
+
+#_events = json.load(open(os.path.join(_SCRIPT_DIR, 'equatorial_events.json')))
+#for _orb in sorted(int(k) for k, v in _events.items() if v.get('loading_events')):
+#    extract_traj(_orb, events_json='equatorial_events.json')
+
+#plot_fac_events(b0_ref='start', smooth_sec=30, label_events=False, show_wavelet=False )
 #plot_event_map(['3784a', '3772c', '4035', '3772b', '3789', '3783'])
-#plot_event_map(color_by_alt=True)
+#plot_event_map(json_path="equatorial_events.json", color_by_category=True)
+
+'''
+df, label = load_simulation_json(
+      'x-1.61_y0.35_z0.37_t110_to_300.json',
+      t_start_s=175,
+      t_stop_s=300,
+      t_partition_s=240)
+plot_fac_events(b0_ref='start', sim_data={'x-1.1_y0_z0.5': (df,label)},smooth_sec=30,show_wavelet=True, label_events=False)
+'''
 
 # ---------------------------------------------------------------------------
 # MVA analysis
@@ -2784,7 +3807,90 @@ def run_orbit_mva(orb, json_path=None, save_dir=None, use_filter=False, dpi=150,
 #             json_path='human_loading_labels.json')
 
 # ---------------------------------------------------------------------------
+# Plot trajecotries of two orbits, for seminar
+# ---------------------------------------------------------------------------
+
+def plot_orbit_xz(orbits, colors=None, labels=None):
+    """Plot orbit trajectories for a list of orbit numbers in XZ and YZ planes.
+
+    Parameters
+    ----------
+    orbits : list[int]   orbit numbers to plot
+    colors : list[str] or None   line colours (cycles through default if None)
+    labels : list[str] or None   legend labels (orbit number used if None)
+    """
+    fig, (ax_xz, ax_yz) = plt.subplots(1, 2, figsize=(12, 6))
+
+    theta = np.linspace(0, 2 * np.pi, 300)
+
+    # load all orbits first so we can do layered drawing in YZ
+    default_colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    orbit_data = []
+    for i, orb in enumerate(orbits):
+        color = colors[i] if colors else default_colors[i % len(default_colors)]
+        label = labels[i] if labels else f'Orbit {orb}'
+        try:
+            df = load_bowers_data_pkl(orbit_number=int(orb))
+        except Exception as exc:
+            print(f'Orbit {orb}: {exc}')
+            continue
+        date_str = pd.to_datetime(df['time'].iloc[0]).strftime('%Y-%m-%d')
+        orbit_data.append((
+            df['ephx'].to_numpy(dtype=float),
+            df['ephy'].to_numpy(dtype=float),
+            df['ephz'].to_numpy(dtype=float),
+            color, f'{label}  ({date_str})',
+        ))
+
+    # XZ panel — planet, then full orbits on top
+    ax_xz.fill(np.cos(theta), -0.2 + np.sin(theta), color='grey', alpha=0.8, zorder=1)
+    ax_xz.plot(np.cos(theta), -0.2 + np.sin(theta), color='grey', lw=1, zorder=2)
+    for x, y, z, color, label in orbit_data:
+        ax_xz.plot(x, z, color=color, lw=1.4, label=label, zorder=3)
+
+    # YZ panel — three layers: dayside behind planet, planet, nightside in front
+    for x, y, z, color, label in orbit_data:
+        y_day = np.where(x > 0, y, np.nan)
+        z_day = np.where(x > 0, z, np.nan)
+        ax_yz.plot(y_day, z_day, color=color, lw=1.4, zorder=1)
+
+    ax_yz.fill(np.cos(theta), -0.2 + np.sin(theta), color='grey', alpha=0.8, zorder=2)
+    ax_yz.plot(np.cos(theta), -0.2 + np.sin(theta), color='grey', lw=1, zorder=2)
+
+    for x, y, z, color, label in orbit_data:
+        y_night = np.where(x <= 0, y, np.nan)
+        z_night = np.where(x <= 0, z, np.nan)
+        ax_yz.plot(y_night, z_night, color=color, lw=1.4, label=label, zorder=3)
+
+    ax_xz.set_xlabel('X$_{MSM}$ (R$_M$)')
+    ax_xz.set_ylabel('Z$_{MSM}$ (R$_M$)')
+    ax_xz.set_aspect('equal')
+    ax_xz.set_xlim(-0.25,-1.5)
+    ax_xz.set_ylim(-1,1.1)
+
+    ax_yz.set_xlabel('Y$_{MSM}$ (R$_M$)')
+    ax_yz.set_ylabel('Z$_{MSM}$ (R$_M$)')
+    ax_yz.set_xlim(1.5, -1.5)   # +Y on the left, consistent with plot_event_map
+    ax_yz.set_aspect('equal')
+    ax_yz.set_xlim(1.125,-1.125)
+    ax_yz.set_ylim(-1,1.25)
+
+    for ax in (ax_xz, ax_yz):
+        ax.axhline(0, color='k', lw=0.4, alpha=0.3)
+        ax.axvline(0, color='k', lw=0.4, alpha=0.3)
+        ax.grid(True, alpha=0.2)
+        ax.legend(fontsize=9)
+
+    fig.tight_layout()
+    plt.show()
+
+#plot_orbit_xz([3964, 3709])
+
+# ---------------------------------------------------------------------------
 # Biot-Savart field perturbation tools
+# ---------------------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------------
 
 def plot_dipole_field_line(lon_deg=180.0, L=2.0, n_pts=500, rsun=0.387, dist_index=50.0,
