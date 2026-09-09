@@ -304,10 +304,13 @@ def extract_traj(orbit, save_path=None, events_json=None):
 
     Columns
     -------
-    t_datetime  : ISO-8601 timestamp string
-    t_epoch     : seconds since the segment start (float, starts at 0)
-    x, y, z     : position in R_M, MSM
-    bx, by, bz  : magnetic field in nT, MSM
+    t_datetime        : ISO-8601 timestamp string
+    t_epoch           : seconds since the segment start (float, starts at 0)
+    t_epoch_partition : seconds relative to the labelled event's partition time
+                        (negative before partition, positive after; NaN if no
+                        event/partition is found in events_json)
+    x, y, z           : position in R_M, MSM
+    bx, by, bz        : magnetic field in nT, MSM
 
     The output filename embeds the labelled loading-event start time (read
     from events_json) so downstream scripts can locate the substorm onset
@@ -331,25 +334,31 @@ def extract_traj(orbit, save_path=None, events_json=None):
     t = pd.to_datetime(seg['time'])
     t_epoch = (t - t.iloc[0]).dt.total_seconds().to_numpy()
 
-    out = pd.DataFrame({
-        't_datetime': t.dt.strftime('%Y-%m-%dT%H:%M:%S.%f'),
-        't_epoch':    t_epoch,
-        'x':          seg['ephx'].to_numpy(),
-        'y':          seg['ephy'].to_numpy(),
-        'z':          seg['ephz'].to_numpy(),
-        'bx':         seg['magx'].to_numpy(),
-        'by':         seg['magy'].to_numpy(),
-        'bz':         seg['magz'].to_numpy(),
-    })
-
     if events_json is None:
         events_json = os.path.join(_SCRIPT_DIR, 'equatorial_events.json')
-    event_start = None
+    event_start = event_partition = None
     if os.path.exists(events_json):
         with open(events_json) as f:
             events = json.load(f).get(str(orbit), {}).get('loading_events', [])
         if events:
             event_start = pd.Timestamp(events[0]['start'])
+            if events[0].get('partition'):
+                event_partition = pd.Timestamp(events[0]['partition'])
+
+    t_epoch_partition = ((t - event_partition).dt.total_seconds().to_numpy()
+                         if event_partition is not None else np.full(len(t), np.nan))
+
+    out = pd.DataFrame({
+        't_datetime':        t.dt.strftime('%Y-%m-%dT%H:%M:%S.%f'),
+        't_epoch':           t_epoch,
+        't_epoch_partition': t_epoch_partition,
+        'x':                 seg['ephx'].to_numpy(),
+        'y':                 seg['ephy'].to_numpy(),
+        'z':                 seg['ephz'].to_numpy(),
+        'bx':                seg['magx'].to_numpy(),
+        'by':                seg['magy'].to_numpy(),
+        'bz':                seg['magz'].to_numpy(),
+    })
 
     if save_path is None:
         out_dir = os.path.join(_SCRIPT_DIR, 'trajectories')
@@ -498,7 +507,7 @@ def set_ephemeris_ticklabels(ax, df, fontsize=15, coords='latlon'):
 # ---------------------------------------------------------------------------
 def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_sec=1,
                     orbit=None, only_cs=False, show_loading=True, show_kt17=False,
-                    show_kt17_residual=None,
+                    show_kt17_residual=None, tick_time_fmt='%H:%M', use_hires_mag=False,
                     save_path=None, df=None, ylim_mag=None,
                     show_inset=True, df_full=None, _show=True):
     """
@@ -529,6 +538,18 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
                     Pass () for mag-only.
     smooth_sec    : boxcar smoothing window in seconds (0 or None for raw)
     df            : pre-loaded Bowers DataFrame; skips all data loading if provided
+    use_hires_mag : if True, replace Bx/By/Bz/|B| with the full-resolution (20 Hz)
+                    MSO MAG data for this window (see download_mag_for_labeled_events),
+                    if the covering day(s) are already downloaded to MAG_20Hz/ —
+                    silently falls back to the default-cadence data (with a printed
+                    note) if not available. Ephemeris/region columns are carried
+                    over from the default-cadence data via nearest-time matching.
+                    When hi-res data is used, the original default-cadence (~1 Hz)
+                    Bx/By/Bz/|B| are also drawn as translucent lines for comparison.
+                    The raw archived MSO data isn't aberration-corrected like the
+                    default-cadence data is, so Bx/By are rotated (fit empirically
+                    against the overlapping default-cadence data) to match before
+                    use; a note is printed with the fitted angle.
 
     Returns matplotlib Figure.
     """
@@ -555,6 +576,27 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
     t0 = pd.Timestamp(t0)
     t1 = pd.Timestamp(t1)
     t  = pd.to_datetime(df['time'])
+
+    lores_overlay = None
+    if use_hires_mag:
+        hires = _load_hires_mag_window(t0, t1)
+        if hires is None:
+            print(f'High-res MAG not available for {t0}–{t1}; using default cadence.')
+        else:
+            lores_overlay = df[['time', 'magx', 'magy', 'magz', 'magamp']].copy()
+            lores_overlay['time'] = pd.to_datetime(lores_overlay['time']).astype('datetime64[ns]')
+
+            hires, _rot_deg = _fit_and_apply_frame_rotation(hires, lores_overlay[['time', 'magx', 'magy']])
+            if _rot_deg:
+                print(f'High-res MAG: correcting {_rot_deg:.2f}° frame rotation (Bx/By) to match reference data.')
+
+            carry_cols = [c for c in ('ephx', 'ephy', 'ephz', 'Type_num') if c in df.columns]
+            lores = df[['time'] + carry_cols].copy()
+            lores['time'] = pd.to_datetime(lores['time']).astype('datetime64[ns]')
+            hires['time'] = pd.to_datetime(hires['time']).astype('datetime64[ns]')
+            df = pd.merge_asof(hires.sort_values('time'), lores.sort_values('time'),
+                               on='time', direction='nearest')
+            t = pd.to_datetime(df['time'])
 
     dt_s = (float(np.median(np.diff((t - t.iloc[0]).dt.total_seconds().to_numpy())))
             if len(t) > 1 else 1.0)
@@ -626,6 +668,30 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
     ax_mag.plot(t, By,   color='green', lw=0.7, label='By')
     ax_mag.plot(t, Bz,   color='blue',  lw=0.7, label='Bz')
     ax_mag.plot(t, Bmag, color='black', lw=0.7, label='|B|')
+    if lores_overlay is not None:
+        t_lo_ov = pd.to_datetime(lores_overlay['time'])
+        dt_lo_s = (float(np.median(np.diff((t_lo_ov - t_lo_ov.iloc[0]).dt.total_seconds().to_numpy())))
+                  if len(t_lo_ov) > 1 else 1.0)
+        win_lo  = int(round(smooth_sec / dt_lo_s)) if smooth_sec else 1
+        if win_lo > 1:
+            kernel_lo = np.ones(win_lo) / win_lo
+            def _boxcar_lo(arr):
+                pad = win_lo // 2
+                return np.convolve(np.pad(arr.astype(float), pad, mode='reflect'),
+                                   kernel_lo, mode='valid')[:len(arr)]
+            Bx_lo   = _boxcar_lo(lores_overlay['magx'].to_numpy())
+            By_lo   = _boxcar_lo(lores_overlay['magy'].to_numpy())
+            Bz_lo   = _boxcar_lo(lores_overlay['magz'].to_numpy())
+            Bmag_lo = _boxcar_lo(lores_overlay['magamp'].to_numpy())
+        else:
+            Bx_lo   = lores_overlay['magx'].to_numpy()
+            By_lo   = lores_overlay['magy'].to_numpy()
+            Bz_lo   = lores_overlay['magz'].to_numpy()
+            Bmag_lo = lores_overlay['magamp'].to_numpy()
+        ax_mag.plot(t_lo_ov, Bx_lo,   color='red',   lw=1.5, alpha=0.3, label='Bx (1 Hz)')
+        ax_mag.plot(t_lo_ov, By_lo,   color='green', lw=1.5, alpha=0.3, label='By (1 Hz)')
+        ax_mag.plot(t_lo_ov, Bz_lo,   color='blue',  lw=1.5, alpha=0.3, label='Bz (1 Hz)')
+        ax_mag.plot(t_lo_ov, Bmag_lo, color='black', lw=1.5, alpha=0.3, label='|B| (1 Hz)')
     if show_kt17 and Bxm_plot is not None:
         ax_mag.plot(t, Bxm_plot,   color='red',   lw=0.7, ls='--', alpha=0.6, label='Bx KT17')
         ax_mag.plot(t, Bym_plot,   color='green', lw=0.7, ls='--', alpha=0.6, label='By KT17')
@@ -767,7 +833,7 @@ def plot_quick_look(t0=None, t1=None, species=('H+',), figsize=(14, 5), smooth_s
             tk_dt = np.datetime64(tk_ts, 'ns')
             idx   = int(np.clip(np.searchsorted(t_arr, tk_dt), 0, len(t_arr) - 1))
             labels.append(
-                f"{tk_ts.strftime('%H:%M')}\n"
+                f"{tk_ts.strftime(tick_time_fmt)}\n"
                 f"X={ex[idx]:.2f}\n"
                 f"Y={ey[idx]:.2f}\n"
                 f"Z={ez[idx]:.2f}"
@@ -962,6 +1028,241 @@ def download_all_fips_espec(overwrite=False):
             if os.path.exists(local):
                 os.remove(local)
     print('Download complete.')
+
+# ---------------------------------------------------------------------------
+# Full-resolution (20 Hz) MAG download helpers
+#
+# Reuses the generic PPI/PDS metadex helpers defined above for FIPS
+# (_fips_metadex_query, _FIPS_DATA_BASE, _fips_save_anchor) — they aren't
+# actually FIPS-specific, just parameterized by collection_id.
+# ---------------------------------------------------------------------------
+_MAG_MSO_DIR           = os.path.join(_SCRIPT_DIR, 'MAG_20Hz')
+_MAG_MSO_COLLECTION_ID = 'urn:nasa:pds:mess-mag-calibrated:data-mso'
+
+
+def _mag_mso_tab_info_for_date(date):
+    """Query metadex for a day's full-resolution MSO MAG TAB URL and UTC start time.
+
+    Returns (tab_url, utc_start_str) or (None, None) on failure.
+    """
+    dt = pd.Timestamp(date)
+    t0 = dt.strftime('%Y-%m-%dT00:00:00Z')
+    t1 = dt.strftime('%Y-%m-%dT23:59:59Z')
+    q  = (f'collection_id:"{_MAG_MSO_COLLECTION_ID}"'
+          f' AND start_date_time:[{t0} TO {t1}]')
+    try:
+        docs = _fips_metadex_query(q, rows=5, fl='slot,data_file,start_date_time')
+        if docs and docs[0].get('slot') and docs[0].get('data_file'):
+            d       = docs[0]
+            tab_url = _FIPS_DATA_BASE + d['slot'] + '/' + d['data_file']
+            return tab_url, d.get('start_date_time', '')
+    except Exception:
+        pass
+    return None, None
+
+
+def mag_mso_path_for_date(date, overwrite=False):
+    """Return the local path for the full-resolution (20 Hz) MSO MAG TAB file
+    covering *date*, downloading it from PDS (via the metadex API) if not
+    already present. *date* may be a datetime, Timestamp, or datetime64.
+
+    Files are ~200 MB each, so this is not cheap to call for many new days.
+    """
+    dt  = pd.Timestamp(date)
+    tag = f'{dt.year % 100:02d}{dt.dayofyear:03d}'   # matches e.g. MAGMSOSCI11120_V08.TAB
+
+    os.makedirs(_MAG_MSO_DIR, exist_ok=True)
+    if not overwrite:
+        existing = [f for f in os.listdir(_MAG_MSO_DIR)
+                   if f.upper().startswith(f'MAGMSOSCI{tag}') and f.upper().endswith('.TAB')]
+        if existing:
+            return os.path.join(_MAG_MSO_DIR, existing[0])
+
+    tab_url, utc_str = _mag_mso_tab_info_for_date(dt)
+    if tab_url is None:
+        raise FileNotFoundError(f'Could not resolve PDS download URL for MAG MSO day {dt.date()}.')
+    fname = tab_url.split('/')[-1]
+    local = os.path.join(_MAG_MSO_DIR, fname)
+    print(f'Downloading {fname} ({dt.date()}, ~200 MB) ...', end=' ', flush=True)
+    try:
+        urllib.request.urlretrieve(tab_url, local)
+        print('done.')
+    except Exception as e:
+        if os.path.exists(local):
+            os.remove(local)
+        raise FileNotFoundError(f'Download failed for {tab_url}: {e}') from e
+    if utc_str:
+        _fips_save_anchor(local, utc_str)
+    return local
+
+
+def download_mag_for_labeled_events(json_path=None, category='a', overwrite=False):
+    """
+    Download full-resolution (20 Hz), MSO-frame MAG data from PDS for every UTC
+    day touched by a labelled event in json_path.
+
+    Safe to re-run at any time (e.g. after labelling new orbits): days already
+    downloaded are skipped unless overwrite=True, so only newly-labelled days
+    get fetched.
+
+    Parameters
+    ----------
+    json_path : str or None — labelling JSON to read (default: human_loading_labels_new.json)
+    category  : str or None — only include events with this category (default 'a');
+                None includes every labelled event regardless of category
+    overwrite : bool — re-download a day's file even if already present
+
+    Returns the sorted list of dates (datetime.date) available locally afterward.
+    """
+    import json as _json
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    dates = set()
+    for orb_str, entry in labels.items():
+        for ev in entry.get('loading_events', []):
+            if category is not None and ev.get('category') != category:
+                continue
+            dates.add(pd.Timestamp(ev['start']).date())
+            dates.add(pd.Timestamp(ev['stop']).date())
+    dates = sorted(dates)
+    print(f'{len(dates)} unique day(s) to fetch for category={category!r}.')
+
+    ok = []
+    for i, d in enumerate(dates, 1):
+        try:
+            path = mag_mso_path_for_date(d, overwrite=overwrite)
+            print(f'[{i}/{len(dates)}] {d}: {os.path.basename(path)}')
+            ok.append(d)
+        except Exception as e:
+            print(f'[{i}/{len(dates)}] {d}: FAILED ({e})')
+
+    print(f'Done — {len(ok)}/{len(dates)} day(s) available in {_MAG_MSO_DIR}.')
+    return ok
+
+
+_MAG_MSO_COLUMNS = ['year', 'doy', 'hour', 'minute', 'second',
+                    'time_tag', 'x_mso', 'y_mso', 'z_mso',
+                    'bx_mso', 'by_mso', 'bz_mso']
+
+
+_MAG_HIRES_DAY_CACHE = {}   # (year, doy) -> DataFrame(time, magx, magy, magz, magamp), or None
+
+
+def _load_hires_mag_day(day):
+    """Load one full day of full-resolution (20 Hz) MSO MAG data from MAG_20Hz/
+    (see mag_mso_path_for_date / download_mag_for_labeled_events), caching the
+    parsed result in memory so repeated calls for the same day (e.g. detection
+    + plotting for several events on one day) don't re-read the ~200 MB file.
+
+    Bx/By/Bz are frame-invariant between MSO and MSM (a pure origin
+    translation doesn't rotate the axes), so BX_MSO/BY_MSO/BZ_MSO can be used
+    directly as magx/magy/magz without any conversion.
+
+    Returns a DataFrame with columns time, magx, magy, magz, magamp for the
+    whole day, or None if that day's file isn't downloaded locally.
+    """
+    day = pd.Timestamp(day).normalize()
+    key = (day.year, day.dayofyear)
+    if key in _MAG_HIRES_DAY_CACHE:
+        return _MAG_HIRES_DAY_CACHE[key]
+
+    tag = f'{day.year % 100:02d}{day.dayofyear:03d}'
+    existing = ([f for f in os.listdir(_MAG_MSO_DIR)
+                if f.upper().startswith(f'MAGMSOSCI{tag}') and f.upper().endswith('.TAB')]
+               if os.path.isdir(_MAG_MSO_DIR) else [])
+    if not existing:
+        _MAG_HIRES_DAY_CACHE[key] = None
+        return None
+
+    path = os.path.join(_MAG_MSO_DIR, existing[0])
+    raw = pd.read_csv(path, sep=r'\s+', header=None, names=_MAG_MSO_COLUMNS,
+                      usecols=['year', 'doy', 'hour', 'minute', 'second',
+                               'bx_mso', 'by_mso', 'bz_mso'],
+                      dtype={'year': 'int32', 'doy': 'int32', 'hour': 'int32',
+                             'minute': 'int32', 'second': 'float64',
+                             'bx_mso': 'float32', 'by_mso': 'float32', 'bz_mso': 'float32'})
+
+    time = (pd.to_datetime(raw['year'], format='%Y')
+           + pd.to_timedelta(raw['doy'] - 1, unit='D')
+           + pd.to_timedelta(raw['hour'], unit='h')
+           + pd.to_timedelta(raw['minute'], unit='m')
+           + pd.to_timedelta(raw['second'], unit='s'))
+
+    out = pd.DataFrame({
+        'time': time,
+        'magx': raw['bx_mso'].to_numpy(dtype=float),
+        'magy': raw['by_mso'].to_numpy(dtype=float),
+        'magz': raw['bz_mso'].to_numpy(dtype=float),
+    })
+    out['magamp'] = np.sqrt(out['magx']**2 + out['magy']**2 + out['magz']**2)
+
+    _MAG_HIRES_DAY_CACHE[key] = out
+    return out
+
+
+def _load_hires_mag_window(t0, t1):
+    """Slice cached (or freshly-loaded) full-resolution MSO MAG day(s) to [t0, t1].
+
+    Returns a DataFrame with columns time, magx, magy, magz, magamp restricted
+    to [t0, t1], or None if any needed day's file isn't downloaded locally.
+    """
+    t0, t1 = pd.Timestamp(t0), pd.Timestamp(t1)
+    days = pd.date_range(t0.normalize(), t1.normalize(), freq='D')
+
+    frames = []
+    for day in days:
+        day_df = _load_hires_mag_day(day)
+        if day_df is None:
+            return None
+        frames.append(day_df)
+    out = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0]
+
+    out = out[(out['time'] >= t0) & (out['time'] <= t1)].reset_index(drop=True)
+    return out if not out.empty else None
+
+
+def _fit_and_apply_frame_rotation(hires, lores_bxy):
+    """Correct a systematic Bx/By rotation between the raw archived MSO MAG
+    data (hires) and the aberration-corrected frame used elsewhere in this
+    codebase's default-cadence ("Bowers") dataset (lores_bxy).
+
+    Mercury's magnetospheric coordinate frames are usually aberrated to
+    account for Mercury's fast, eccentric orbital motion adding to the solar
+    wind flow direction (typically a few degrees, varying with true anomaly)
+    — the raw PDS product is not. Left uncorrected this rotates Bx into By
+    and vice versa (Bz, and |B|, are unaffected since the rotation is about Z).
+
+    lores_bxy : DataFrame with columns time, magx, magy in the reference frame
+                to match (already restricted to hires' approximate time range)
+
+    Returns hires with magx/magy rotated in place to match lores_bxy's frame,
+    and the fitted angle in degrees (0.0 if a fit wasn't possible).
+    """
+    matched = pd.merge_asof(lores_bxy[['time', 'magx', 'magy']].sort_values('time'),
+                            hires[['time', 'magx', 'magy']].sort_values('time'),
+                            on='time', direction='nearest', suffixes=('_lo', '_hi'),
+                            tolerance=pd.Timedelta('0.5s')).dropna()
+    if len(matched) < 10:
+        return hires, 0.0
+
+    bx_lo, by_lo = matched['magx_lo'].to_numpy(), matched['magy_lo'].to_numpy()
+    bx_hi, by_hi = matched['magx_hi'].to_numpy(), matched['magy_hi'].to_numpy()
+    cross = bx_hi * by_lo - by_hi * bx_lo
+    dot   = bx_hi * bx_lo + by_hi * by_lo
+    theta_deg = float(np.median(np.degrees(np.arctan2(cross, dot))))
+
+    th = np.radians(theta_deg)
+    c, s = np.cos(th), np.sin(th)
+    x, y = hires['magx'].to_numpy(), hires['magy'].to_numpy()
+    hires = hires.copy()
+    hires['magx'] = x * c - y * s
+    hires['magy'] = x * s + y * c
+    return hires, theta_deg
 
 # ---------------------------------------------------------------------------
 # FIPS data loading
@@ -1406,7 +1707,7 @@ def fac_wave_analysis(coef: np.ndarray, magf: np.ndarray):
 #fig = plot_quick_look('2015-02-01/07:20:00', '2015-02-01/07:40:00', show_loading=False,show_kt17=True, save_path="figures/quicklook.png")
 #fig = plot_quick_look(orbit = 3782, only_cs=True, show_loading=True, show_kt17=True, save_path="figures/quicklook.png")
 #fig = plot_quick_look('2013-05-31/09:04:10', '2013-05-31/09:06:40', show_loading=False,show_kt17=False, save_path="figures/quicklook.png")
-#fig = plot_quick_look(orbit = 1709, only_cs=True, show_loading=False, show_kt17=True, save_path="figures/quicklook.png")
+#fig = plot_quick_look(orbit = 642, only_cs=True, show_loading=False, show_kt17=True, save_path="figures/quicklook_20Hz.png", use_hires_mag=True, smooth_sec=None)
 
 #fig = plot_quick_look('2013-05-28/17:04:11', '2013-05-28/17:09:11', only_cs=True, show_loading=False, show_kt17=False, save_path="figures/quicklook.png",figsize=(20,6))
 
@@ -1904,6 +2205,23 @@ def _is_southward(seg_df):
     z = seg_df['ephz'].to_numpy()
     return float(z[-1]) < float(z[0])
 
+def _abs_y_at_z0(seg_df):
+    """|Y_MSM| at the first Z_MSM=0 (magnetic equator) crossing within seg_df,
+    linearly interpolated between the bracketing samples. None if Z never
+    changes sign within seg_df."""
+    z = seg_df['ephz'].to_numpy()
+    y = seg_df['ephy'].to_numpy()
+    sign_change = np.where(np.diff(np.sign(z)) != 0)[0]
+    if len(sign_change) == 0:
+        return None
+    i = sign_change[0]
+    z0, z1 = float(z[i]), float(z[i + 1])
+    y0, y1 = float(y[i]), float(y[i + 1])
+    if z1 == z0:
+        return abs(y0)
+    frac = -z0 / (z1 - z0)
+    return abs(y0 + frac * (y1 - y0))
+
 def browse_southward_orbits(n0, n1, species=None, show_kt17=True):
     """Plot each orbit in [n0, n1] whose nightside crossing moves southward.
 
@@ -1947,7 +2265,8 @@ def browse_southward_orbits(n0, n1, species=None, show_kt17=True):
     print(f'\nDone — showed {n_shown} southward orbit(s) in range {n0}–{n1}.')
 
 
-def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, direction='south'):
+def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, direction='south',
+                           order_by='orbit', z_range=None):
     """Interactive loading/unloading event labeller for nightside crossings.
 
     "Southward"/"northward" here describe the direction Z_MSM moves through
@@ -1964,7 +2283,9 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
     -------
     Save & Next  save labelled events and advance
     Undo         remove last click or last completed event
-    No events    mark orbit reviewed with no events and advance
+    No events    mark orbit reviewed and clear events that were visible in the
+                 current view (e.g. within z_range); any pre-existing event
+                 entirely outside the current view is left untouched, not deleted
     Skip         advance without saving
 
     Labels are written to JSON after every Save/No-events action, so progress
@@ -1981,6 +2302,18 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
     show_kt17   : bool  overlay KT17 residuals (slow)
     ylim_mag    : (ymin, ymax) or None
     direction   : 'south' or 'north' — which crossing direction (dZ/dt sign) to label
+    order_by    : 'orbit' (default) processes orbits in ascending orbit-number
+                  order, showing each one as soon as it's loaded. 'y' processes
+                  them in ascending |Y_MSM| at the Z=0 (magnetic equator)
+                  crossing instead, so orbits closest to the midnight meridian
+                  are shown first — this requires loading every orbit in
+                  [n0, n1] up front to sort them, which is far slower to get
+                  started for a large range (progress is printed while it scans).
+                  Orbits whose segment never crosses Z=0 are pushed to the end.
+    z_range     : (zmin, zmax) or None — if given, trims the displayed segment to
+                  zmin < ephz < zmax (e.g. z_range=(-0.6, 0.6)), overriding the
+                  default single-sided trim (ephz > -1 for direction='south',
+                  ephz < 1 for direction='north')
     """
     import json as _json
     import matplotlib.dates as mdates
@@ -1997,24 +2330,57 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
         with open(json_path) as f:
             labels = _json.load(f)
 
+    if order_by not in ('orbit', 'y'):
+        raise ValueError("order_by must be 'orbit' or 'y'")
+
     sp = tuple(species) if species else ()
 
-    for orb in range(n0, n1 + 1):
+    def _qualify(orb):
+        """Load + apply the qualifying filters to one orbit; (orb_df, seg) or None."""
         try:
             orb_df = load_bowers_data_pkl(orbit_number=orb)
         except Exception as exc:
             print(f'Orbit {orb}: skipped ({exc})')
-            continue
+            return None
 
         seg = filter_orbit_segment(orb_df)
         if seg.empty:
-            continue
-        seg = seg[seg['ephz'] > -1] if direction == 'south' else seg[seg['ephz'] < 1]
+            return None
+        if z_range is not None:
+            seg = seg[(seg['ephz'] > z_range[0]) & (seg['ephz'] < z_range[1])]
+        else:
+            seg = seg[seg['ephz'] > -1] if direction == 'south' else seg[seg['ephz'] < 1]
         if seg.empty:
-            continue
+            return None
         if _is_southward(seg) != (direction == 'south'):
-            continue
+            return None
+        return orb_df, seg
 
+    def _iter_qualifying_orbits():
+        if order_by == 'y':
+            print('Scanning orbits to sort by |Y| at Z=0 (loads every orbit up front, '
+                  'so this takes a while to get started)...')
+            total = n1 - n0 + 1
+            queue = []
+            for i, orb in enumerate(range(n0, n1 + 1), 1):
+                result = _qualify(orb)
+                if result is not None:
+                    queue.append((orb,) + result)
+                if i % 50 == 0 or i == total:
+                    print(f'  ...scanned {i}/{total} orbits, {len(queue)} qualify so far')
+            def _y_sort_key(item):
+                y0 = _abs_y_at_z0(item[2])
+                return y0 if y0 is not None else float('inf')
+            queue.sort(key=_y_sort_key)
+            print(f'Done scanning — {len(queue)} orbit(s) queued, sorted by |Y| at Z=0.')
+            yield from queue
+        else:
+            for orb in range(n0, n1 + 1):
+                result = _qualify(orb)
+                if result is not None:
+                    yield (orb,) + result
+
+    for orb, orb_df, seg in _iter_qualifying_orbits():
         fig = plot_quick_look(df=seg, orbit=orb, df_full=orb_df, species=sp,
                               show_kt17=True, show_loading=False,
                               ylim_mag=ylim_mag, _show=False)
@@ -2031,13 +2397,16 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
             'artists': [],   # all span/vline artists drawn by _redraw
         }
 
-        # pre-fill from existing labels
+        # pre-fill from existing labels — keep the original dict (under '_orig')
+        # so any extra fields other tools added (bz_recovery_sec, lobe, etc.)
+        # survive being re-saved here unchanged
         entry = labels.get(str(orb), {})
         for ev in entry.get('loading_events', []):
             state['events'].append({
                 'start':     pd.Timestamp(ev['start']),
                 'partition': pd.Timestamp(ev.get('partition', ev['start'])),
                 'stop':      pd.Timestamp(ev['stop']),
+                '_orig':     ev,
             })
 
         # ── drawing helpers ─────────────────────────────────────────────────
@@ -2094,15 +2463,28 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
             with open(json_path, 'w') as f:
                 _json.dump(labels, f, indent=2, sort_keys=True)
 
+        # bounds of what's actually shown (e.g. after z_range trimming), so
+        # "No events" only clears events that were visible in this view and
+        # preserves any pre-existing event entirely outside it
+        t_view_lo = pd.Timestamp(seg['time'].iloc[0])
+        t_view_hi = pd.Timestamp(seg['time'].iloc[-1])
+
+        def _in_view(ev):
+            return not (ev['stop'] < t_view_lo or ev['start'] > t_view_hi)
+
+        def _event_to_dict(ev):
+            """Serialize one state['events'] entry, preserving any extra fields
+            from its original JSON dict (e.g. bz_recovery_sec, lobe) if present."""
+            out = dict(ev['_orig']) if '_orig' in ev else {}
+            out['start']     = ev['start'].isoformat()
+            out['partition'] = ev['partition'].isoformat()
+            out['stop']      = ev['stop'].isoformat()
+            return out
+
         def _save(_ev):
             labels[str(orb)] = {
                 'reviewed': True,
-                'loading_events': [
-                    {'start':     ev['start'].isoformat(),
-                     'partition': ev['partition'].isoformat(),
-                     'stop':      ev['stop'].isoformat()}
-                    for ev in state['events']
-                ],
+                'loading_events': [_event_to_dict(ev) for ev in state['events']],
             }
             _write_json()
             print(f'  Orbit {orb}: saved {len(state["events"])} event(s)')
@@ -2117,9 +2499,14 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
             _update_title()
 
         def _no_events(_ev):
-            labels[str(orb)] = {'reviewed': True, 'loading_events': []}
+            preserved = [ev for ev in state['events'] if not _in_view(ev)]
+            labels[str(orb)] = {
+                'reviewed': True,
+                'loading_events': [_event_to_dict(ev) for ev in preserved],
+            }
             _write_json()
-            print(f'  Orbit {orb}: no events')
+            note = f' ({len(preserved)} out-of-view event(s) preserved)' if preserved else ''
+            print(f'  Orbit {orb}: no events in view{note}')
             plt.close(fig)
 
         def _skip(_ev):
@@ -2149,10 +2536,17 @@ def label_southward_orbits(n0, n1, json_path=None, species=None, ylim_mag=None, 
         fig.canvas.mpl_disconnect(cid)
 
 
-def plot_labelled_events(json_path=None, save_dir=None, species=None,
+def _split_pad(pad):
+    """(before, after) seconds from a symmetric scalar pad or an explicit [before, after] pad."""
+    if isinstance(pad, (list, tuple)):
+        return float(pad[0]), float(pad[1])
+    return float(pad), float(pad)
+
+
+def plot_labelled_events(json_path=None, save_dir=None, species=None, orbits=None,
                          ylim_mag=None, dpi=150, skip_no_events=True, pad_sec=None,
                          pad_from_partition=False, show_kt17=True, show_kt17_residual=None,
-                         figsize=(14, 5)):
+                         show_bz_recovery=False, figsize=(14, 5)):
     """Plot and save every reviewed orbit from the labelling JSON.
 
     Uses the same layout as label_southward_orbits (FIPS optional).
@@ -2164,21 +2558,35 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
     json_path       : str or None  — defaults to human_loading_labels_new.json
     save_dir        : str or None  — defaults to <script_dir>/figures/labelled/
     species         : list[str] or None  — FIPS species overlay
+    orbits          : list[int] or None — if given, only plot these orbit numbers;
+                      None (default) plots every reviewed orbit in json_path
     ylim_mag        : (ymin, ymax) or None
     dpi             : int  — output resolution
     skip_no_events  : bool — skip orbits marked reviewed but with no events
-    pad_sec         : float or None — if given, crops the plotted window instead of
-                      showing the full current-sheet crossing segment. By default the
-                      window is [earliest event start - pad_sec, latest event stop + pad_sec];
+    pad_sec         : float, [before, after], or None — if given, crops the plotted window
+                      instead of showing the full current-sheet crossing segment. By default
+                      the window is [earliest event start - pad_sec, latest event stop + pad_sec];
                       if pad_from_partition=True it is [earliest partition - pad_sec,
-                      latest partition + pad_sec] instead.
-    pad_from_partition : bool — see pad_sec above
+                      latest partition + pad_sec] instead. Pass [before, after] instead of a
+                      single number for an asymmetric pad, e.g. pad_sec=[20, 40] for 20s
+                      before and 40s after.
+    pad_from_partition : bool, or a number/[before, after] — see pad_sec above. May also be
+                      given directly as a pad duration (equivalent to passing that value as
+                      pad_sec with pad_from_partition=True), including as [before, after].
     show_kt17       : bool — overlay the dashed KT17 model field in the top mag panel
     show_kt17_residual : bool or None — add the obs-minus-KT17 residual panel; defaults
                       to show_kt17 (old behaviour) when left as None
+    show_bz_recovery : bool — if True, also overlay each event's manually/automatically
+                      determined Bz timings (from label_bz_recovery / measure_bz_recovery),
+                      whichever of 'bz_unloading_start' (green solid), 'bz_negative_onset'
+                      (purple dotted, the Bz peak), 'bz_recovery_time' (purple dash-dot),
+                      and 'bz_unloading_stop' (red dashed) are present on the event
     figsize         : (width, height) passed through to plot_quick_look
     """
     import json as _json
+
+    if pad_from_partition and not isinstance(pad_from_partition, bool):
+        pad_sec, pad_from_partition = pad_from_partition, True
 
     if json_path is None:
         json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
@@ -2190,9 +2598,12 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
         labels = _json.load(f)
 
     sp = tuple(species) if species else ()
+    orbit_set = set(orbits) if orbits is not None else None
 
     n_saved = 0
     for orb_str, entry in sorted(labels.items(), key=lambda kv: int(kv[0])):
+        if orbit_set is not None and int(orb_str) not in orbit_set:
+            continue
         if not entry.get('reviewed', False):
             continue
         events = entry.get('loading_events', [])
@@ -2220,8 +2631,9 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
             else:
                 t_mid_lo = min(pd.Timestamp(ev['start']) for ev in events)
                 t_mid_hi = max(pd.Timestamp(ev['stop'])  for ev in events)
-            t_lo = t_mid_lo - pd.Timedelta(seconds=pad_sec)
-            t_hi = t_mid_hi + pd.Timedelta(seconds=pad_sec)
+            pad_before, pad_after = _split_pad(pad_sec)
+            t_lo = t_mid_lo - pd.Timedelta(seconds=pad_before)
+            t_hi = t_mid_hi + pd.Timedelta(seconds=pad_after)
             seg = seg[(pd.to_datetime(seg['time']) >= t_lo) & (pd.to_datetime(seg['time']) <= t_hi)]
             if seg.empty:
                 continue
@@ -2242,6 +2654,21 @@ def plot_labelled_events(json_path=None, save_dir=None, species=None,
                 ax.axvline(t_start, color=_COLORS['start'],     lw=1.5, ls='-',  zorder=3)
                 ax.axvline(t_part,  color=_COLORS['partition'], lw=1.5, ls='--', zorder=3)
                 ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
+
+            if show_bz_recovery:
+                _BZ_STYLES = {
+                    'bz_unloading_start': ('limegreen', '-'),
+                    'bz_negative_onset':  ('purple', ':'),
+                    'bz_recovery_time':   ('purple', '-.'),
+                    'bz_unloading_stop':  ('red', '--'),
+                }
+                for field, (color, ls) in _BZ_STYLES.items():
+                    val = ev.get(field)
+                    if not val:
+                        continue
+                    t_bz = pd.Timestamp(val)
+                    for ax in click_axes:
+                        ax.axvline(t_bz, color=color, lw=2.0, ls=ls, zorder=5)
 
         n_ev = len(events)
         date_str = pd.Timestamp(seg['time'].iloc[0]).strftime('%Y-%m-%d')
@@ -2394,7 +2821,8 @@ def sort_loading_type(json_path=None, species=None, ylim_mag=None, show_kt17=Tru
 def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None,
                         species=None, ylim_mag=None, show_kt17=True, show_kt17_residual=False,
                         pad_sec=None, pad_from_partition=False, search_pad_sec=120,
-                        peak_window_sec=10, smooth_sec=1, figsize=(14, 5), dpi=150):
+                        peak_window_sec=10, smooth_sec=1, figsize=(14, 5), dpi=150,
+                        analyze=True, use_hires_mag=False, order_by='orbit', hide_legend=False):
     """
     Measure how long Bz stays negative around an event's partition (unloading
     onset) time before recovering to positive, for labelled events in the
@@ -2405,8 +2833,14 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
         peak_window_sec of the partition time — the negative-Bz peak
       - finds the first sample after that peak where Bz has recovered to >= 0
       - delay_sec = time from the peak to the recovery, written to the
-        event's 'bz_recovery_sec' field in json_path ('bz_recovery_time' and
-        'bz_negative_onset' timestamps are stored alongside it)
+        event's 'bz_recovery_sec' field in json_path ('bz_recovery_time',
+        'bz_negative_onset', and 'recovery_time_computed'=True are stored
+        alongside it)
+      - events with 'recovery_time_computed' explicitly set to False in
+        json_path are protected: auto-detection is skipped for them even
+        with analyze=True, so a manual override survives later batch runs
+        (e.g. after new events are added). Set that flag to False yourself
+        after hand-editing an event's bz_negative_onset/bz_recovery_time.
       - saves a figure (same layout/lines as plot_labelled_events) with
         purple vertical lines marking the Bz peak (dotted) and Bz>0
         recovery (dash-dot), so the detection can be checked visually
@@ -2426,11 +2860,18 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
     show_kt17       : bool — overlay the dashed KT17 model field in the top mag panel
     show_kt17_residual : bool — add the obs-minus-KT17 residual panel (default False,
                       unlike plot_labelled_events/sort_loading_type)
-    pad_sec         : float or None — crop the plotted window, as in plot_labelled_events
-    pad_from_partition : bool — if True (with pad_sec), window is centred on the
-                      partition time instead of [start, stop]
-    search_pad_sec  : float — how far past the event stop to keep searching for
-                      the recovery crossing (default 120s)
+    pad_sec         : float, [before, after], or None — crop the plotted window, as in
+                      plot_labelled_events (pass [before, after] for an asymmetric pad,
+                      e.g. [20, 40] for 20s before and 40s after). This only affects what's
+                      displayed — detection always searches the full range out to
+                      search_pad_sec regardless, so a tight pad_sec can leave the recovery
+                      marker (if found) outside the plotted window.
+    pad_from_partition : bool, or a number/[before, after] — if True (with pad_sec), window
+                      is centred on the partition time instead of [start, stop]. May also be
+                      given directly as a pad duration (equivalent to passing that value as
+                      pad_sec with pad_from_partition=True), including as [before, after].
+    search_pad_sec  : float — how far past the event stop detection keeps searching for
+                      the recovery crossing (default 120s); independent of pad_sec
     peak_window_sec : float — the negative-Bz peak is taken as the most negative
                       sample within this many seconds before/after the partition
                       time (default 10s)
@@ -2438,11 +2879,30 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
                       should match what you're inspecting visually (default 1)
     figsize         : (width, height)
     dpi             : output resolution
+    analyze         : bool — if True (default), run the peak/recovery detection and
+                      save results to json_path as usual. If False, skip detection
+                      entirely and just re-plot each event using whatever
+                      'bz_negative_onset'/'bz_recovery_time'/'bz_recovery_sec' are
+                      already in json_path — use this to regenerate plots after
+                      manually editing those fields, without overwriting your edits.
+    use_hires_mag   : if True, run detection on the full-resolution (20 Hz) MSO MAG
+                      data for days already downloaded to MAG_20Hz/ (see
+                      download_mag_for_labeled_events), and pass the same option
+                      through to the plot. Falls back to the default-cadence data
+                      (with a printed note) for any day not yet downloaded.
+    order_by        : 'orbit' (default) processes events in ascending orbit-number
+                      order; 'z' processes them in ascending |Z| at the partition
+                      time instead, so events closest to the equator are shown first.
+    hide_legend     : bool — if True, remove the top mag panel's Bx/By/Bz/|B| legend
+                      from the saved figure (default False)
 
     Returns a list of dicts: {'orbit', 'event_index', 'delay_sec'} (delay_sec
     is None for events where no clean negative-to-positive crossing was found).
     """
     import json as _json
+
+    if pad_from_partition and not isinstance(pad_from_partition, bool):
+        pad_sec, pad_from_partition = pad_from_partition, True
 
     if json_path is None:
         json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
@@ -2468,6 +2928,7 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
     _COLORS = {'start': 'limegreen', 'partition': 'orange', 'stop': 'red'}
 
     results = []
+    queue = []
     for orb in orbits:
         orb_str = str(orb)
         entry = labels.get(orb_str, {})
@@ -2486,30 +2947,76 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
         for idx, ev in enumerate(events):
             if category is not None and ev.get('category') != category:
                 continue
+            queue.append({'orb': orb, 'idx': idx, 'ev': ev, 'orb_df': orb_df, 'seg': seg})
 
-            t_start = pd.Timestamp(ev['start'])
-            t_part  = pd.Timestamp(ev.get('partition', ev['start']))
-            t_stop  = pd.Timestamp(ev['stop'])
-            search_hi = t_stop + pd.Timedelta(seconds=search_pad_sec)
+    if order_by == 'z':
+        def _abs_z_at_partition(item):
+            ev_ = item['ev']
+            t_part_ = pd.Timestamp(ev_.get('partition', ev_['start']))
+            t_seg_ = pd.to_datetime(item['seg']['time']).to_numpy()
+            j = int(np.clip(np.searchsorted(t_seg_, np.datetime64(t_part_)), 0, len(t_seg_) - 1))
+            return abs(float(item['seg']['ephz'].iloc[j]))
+        queue.sort(key=_abs_z_at_partition)
 
-            if pad_from_partition and pad_sec is not None:
-                t_lo, t_hi = t_part - pd.Timedelta(seconds=pad_sec), t_part + pd.Timedelta(seconds=pad_sec)
-            elif pad_sec is not None:
-                t_lo, t_hi = t_start - pd.Timedelta(seconds=pad_sec), t_stop + pd.Timedelta(seconds=pad_sec)
-            else:
-                t_lo, t_hi = t_start, t_stop
-            t_hi = max(t_hi, search_hi)   # always show enough to see the recovery crossing
+    for item in queue:
+        orb, idx, ev, orb_df, seg = item['orb'], item['idx'], item['ev'], item['orb_df'], item['seg']
 
-            t_seg = pd.to_datetime(seg['time'])
-            plot_seg = seg[(t_seg >= t_lo) & (t_seg <= t_hi)]
-            if plot_seg.empty:
-                print(f'Orbit {orb} event {idx}: no data in window, skipping')
-                continue
+        t_start = pd.Timestamp(ev['start'])
+        t_part  = pd.Timestamp(ev.get('partition', ev['start']))
+        t_stop  = pd.Timestamp(ev['stop'])
+        search_hi = t_stop + pd.Timedelta(seconds=search_pad_sec)
 
-            t_arr = pd.to_datetime(plot_seg['time']).to_numpy()
+        if pad_from_partition and pad_sec is not None:
+            pad_before, pad_after = _split_pad(pad_sec)
+            t_lo, t_hi = t_part - pd.Timedelta(seconds=pad_before), t_part + pd.Timedelta(seconds=pad_after)
+        elif pad_sec is not None:
+            pad_before, pad_after = _split_pad(pad_sec)
+            t_lo, t_hi = t_start - pd.Timedelta(seconds=pad_before), t_stop + pd.Timedelta(seconds=pad_after)
+        else:
+            t_lo, t_hi = t_start, t_stop
+
+        # detection always searches the full [peak_window before partition, search_hi]
+        # range regardless of the display crop above, so a tight pad_sec doesn't
+        # prevent finding (or plotting a now-possibly-offscreen) recovery marker
+        det_lo = min(t_lo, t_part - pd.Timedelta(seconds=peak_window_sec))
+        det_hi = max(t_hi, search_hi)
+
+        t_seg = pd.to_datetime(seg['time'])
+        plot_seg = seg[(t_seg >= t_lo) & (t_seg <= t_hi)]
+        if plot_seg.empty:
+            print(f'Orbit {orb} event {idx}: no data in window, skipping')
+            continue
+        det_seg = seg[(t_seg >= det_lo) & (t_seg <= det_hi)]
+
+        t_neg = pd.Timestamp(ev['bz_negative_onset']) if ev.get('bz_negative_onset') else None
+        t_pos = pd.Timestamp(ev['bz_recovery_time'])  if ev.get('bz_recovery_time')  else None
+        if t_neg is not None and t_pos is not None:
+            delay_sec = (t_pos - t_neg).total_seconds()
+            if not analyze and delay_sec != ev.get('bz_recovery_sec'):
+                ev['bz_recovery_sec'] = delay_sec
+                _write_json()
+        else:
+            delay_sec = ev.get('bz_recovery_sec')
+
+        locked = ev.get('recovery_time_computed') is False
+        if analyze and locked:
+            print(f'Orbit {orb} event {idx}: recovery_time_computed=False, '
+                  f'skipping auto-detection (manual override protected)')
+
+        if analyze and not locked:
+            det_df = det_seg
+            if use_hires_mag:
+                hires = _load_hires_mag_window(det_lo, det_hi)
+                if hires is None:
+                    print(f'Orbit {orb} event {idx}: high-res MAG not available for '
+                          f'{det_lo}–{det_hi}; using default cadence for detection.')
+                else:
+                    det_df = hires
+
+            t_arr = pd.to_datetime(det_df['time']).to_numpy()
             dt_s  = float(np.median(np.diff(t_arr).astype('timedelta64[ns]').astype(float) / 1e9)) if len(t_arr) > 1 else 1.0
             win   = int(round(smooth_sec / dt_s)) if smooth_sec else 1
-            magz  = plot_seg['magz'].to_numpy().astype(float)
+            magz  = det_df['magz'].to_numpy().astype(float)
             if win > 1:
                 kernel = np.ones(win) / win
                 pad = win // 2
@@ -2542,39 +3049,1002 @@ def measure_bz_recovery(orbits=None, json_path=None, category='a', save_dir=None
                         t_pos = pd.Timestamp(t_arr[idx_pos])
                         delay_sec = (t_pos - t_neg).total_seconds()
 
-                        ev['bz_recovery_sec']    = delay_sec
-                        ev['bz_recovery_time']   = t_pos.isoformat()
-                        ev['bz_negative_onset']  = t_neg.isoformat()
+                        ev['bz_recovery_sec']        = delay_sec
+                        ev['bz_recovery_time']       = t_pos.isoformat()
+                        ev['bz_negative_onset']      = t_neg.isoformat()
+                        ev['recovery_time_computed'] = True
                         _write_json()
                         print(f'Orbit {orb} event {idx}: Bz negative -> positive in {delay_sec:.1f} s')
 
-            results.append({'orbit': orb, 'event_index': idx, 'delay_sec': delay_sec})
+        results.append({'orbit': orb, 'event_index': idx, 'delay_sec': delay_sec})
 
-            fig = plot_quick_look(df=plot_seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
-                                  show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
-                                  show_loading=False, ylim_mag=ylim_mag, _show=False)
+        fig = plot_quick_look(df=plot_seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
+                              show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
+                              show_loading=False, ylim_mag=ylim_mag, tick_time_fmt='%H:%M:%S',
+                              use_hires_mag=use_hires_mag, _show=False)
+        if hide_legend:
             for ax in fig._data_axes:
-                ax.axvspan(t_start, t_stop, color='green', alpha=0.15, zorder=2)
-                ax.axvline(t_start, color=_COLORS['start'],     lw=1.5, ls='-',  zorder=3)
-                ax.axvline(t_part,  color=_COLORS['partition'], lw=1.5, ls='--', zorder=3)
-                ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
-                if t_neg is not None:
-                    ax.axvline(t_neg, color='purple', lw=1.5, ls=':',  zorder=4, label='Bz peak')
-                if t_pos is not None:
-                    ax.axvline(t_pos, color='purple', lw=1.5, ls='-.', zorder=4, label='Bz > 0')
+                legend = ax.get_legend()
+                if legend is not None:
+                    legend.remove()
+        for ax in fig._data_axes:
+            ax.axvspan(t_start, t_stop, color='green', alpha=0.15, zorder=2)
+            ax.axvline(t_start, color=_COLORS['start'],     lw=1.5, ls='-',  zorder=3)
+            ax.axvline(t_part,  color=_COLORS['partition'], lw=1.5, ls='--', zorder=3)
+            ax.axvline(t_stop,  color=_COLORS['stop'],      lw=1.5, ls='--', zorder=3)
+            if t_neg is not None:
+                ax.axvline(t_neg, color='purple', lw=1.5, ls=':',  zorder=4, label='Bz peak')
+            if t_pos is not None:
+                ax.axvline(t_pos, color='purple', lw=1.5, ls='-.', zorder=4, label='Bz > 0')
 
-            date_str = t_start.strftime('%Y-%m-%d')
-            cat_str  = ev.get('category', '?')
-            delay_str = f'{delay_sec:.1f} s' if delay_sec is not None else 'not found'
-            fig.suptitle(f'Orbit {orb}  —  {date_str}  —  event {idx}  —  type: {cat_str}  —  '
-                        f'Bz recovery: {delay_str}', fontsize=10)
+        date_str = t_start.strftime('%Y-%m-%d')
+        cat_str  = ev.get('category', '?')
+        delay_str = f'{delay_sec:.1f} s' if delay_sec is not None else 'not found'
+        fig.suptitle(f'Orbit {orb}  —  {date_str}  —  event {idx}  —  type: {cat_str}  —  '
+                    f'Bz recovery: {delay_str}', fontsize=10)
 
-            out_path = os.path.join(save_dir, f'orbit_{orb:05d}_ev{idx}.png')
-            fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
-            plt.close(fig)
+        out_path = os.path.join(save_dir, f'orbit_{orb:05d}_ev{idx}.png')
+        fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
+        plt.close(fig)
 
     print(f'\nDone — processed {len(results)} event(s).')
     return results
+
+
+def label_bz_recovery(orbits=None, json_path=None, category='a', species=None,
+                      ylim_mag=None, show_kt17=False, show_kt17_residual=False,
+                      pad_sec=None, pad_from_partition=None, use_hires_mag=False,
+                      order_by='orbit', skip_marked_events=False, hide_legend=False,
+                      smooth_sec=1, figsize=(14, 5)):
+    """
+    Interactive manual labeller for unloading start / Bz-peak / Bz-recovery /
+    unloading-complete times.
+
+    Same interaction style as label_southward_orbits: one event is shown at a
+    time in a blocking matplotlib window; click to mark each of up to 4 times
+    in turn, then use a button to save and advance.
+
+    Clicks
+    ------
+        1st click  →  UNLOADING START     (green solid line)   — when Bz starts to change
+        2nd click  →  Bz PEAK             (purple dotted line) — the most negative Bz
+        3rd click  →  Bz RECOVERY         (purple dash-dot line) — when Bz has recovered
+        4th click  →  UNLOADING COMPLETE  (red dashed line)    — optional; skip it (just
+                       press Save & Next after 3 clicks) if it isn't clearly identifiable
+    (clicks are sorted chronologically before saving, so clicking them in the
+    "wrong" order still works; the 4th click is the only optional one — the
+    first 3 are always required to save)
+
+    The title shows the automatically-identified magnetic lobe for the event
+    (from the mean Bx over the displayed window: <Bx> > 0 -> northern lobe,
+    <Bx> < 0 -> southern lobe) — use the 'Toggle N/S' button to correct it if
+    the automatic call is wrong.
+
+    Buttons
+    -------
+    Save & Next ✓  save the clicked times (3 or 4 of them, and lobe) and advance
+    No recovery    mark the event as having no discernible recovery and advance
+    Toggle N/S     flip the displayed/saved lobe from the automatic guess
+    Undo           remove the last click
+    Skip           advance without saving or marking anything reviewed
+
+    Saving (Save & Next or No recovery) writes 'lobe', sets
+    'bz_manually_reviewed'=True (what skip_marked_events checks — distinct
+    from 'recovery_time_computed', which only tracks auto-detection
+    provenance and is also set True by measure_bz_recovery's automated runs),
+    and sets 'recovery_time_computed'=False so measure_bz_recovery's
+    automated batch runs never silently overwrite a manually reviewed event.
+    Skip leaves everything untouched, so the event reappears next time.
+    'Save & Next' additionally writes 'bz_unloading_start', 'bz_negative_onset'
+    (the peak), 'bz_recovery_time', 'bz_recovery_sec' (recovery minus peak),
+    'bz_unloading_stop' (None if the 4th click was skipped), and sets
+    'bz_no_recovery'=False. 'No recovery' instead sets 'bz_no_recovery'=True
+    and clears bz_unloading_start/bz_negative_onset/bz_recovery_time/
+    bz_recovery_sec/bz_unloading_stop to None.
+
+    Parameters
+    ----------
+    orbits             : list[int] or None — orbit numbers to process; if None (default),
+                         every orbit in json_path with at least one event matching
+                         `category` is used
+    json_path          : str or None — labelling JSON to read/write
+                         (default: human_loading_labels_new.json)
+    category           : str or None — only show events with this category (default 'a');
+                         None shows every event regardless of category
+    species            : list[str] or None — FIPS species overlay
+    ylim_mag           : (ymin, ymax) or None
+    show_kt17          : bool — overlay the dashed KT17 model field in the top mag panel
+    show_kt17_residual : bool — add the obs-minus-KT17 residual panel
+    pad_sec            : float, [before, after], or None — crop the displayed window
+                         (default None shows the full [start, stop] event span); you can
+                         still pan/zoom the interactive window manually beyond this
+    pad_from_partition : bool, or a number/[before, after] — if True (with pad_sec),
+                         window is centred on the partition time instead of [start, stop].
+                         May also be given directly as a pad duration, as in
+                         measure_bz_recovery.
+    use_hires_mag      : bool — show the full-resolution (20 Hz) MSO MAG data for days
+                         already downloaded to MAG_20Hz/, falling back to default cadence
+    order_by           : 'orbit' (default) or 'z' — 'z' shows events in ascending |Z| at
+                         the partition time first (closest to the equator first)
+    skip_marked_events : bool — if True, only show events with 'bz_manually_reviewed'
+                         not yet True; if False (default), show every qualifying event
+                         in order
+    hide_legend        : bool — hide the top mag panel's Bx/By/Bz/|B| legend
+    smooth_sec         : boxcar smoothing window (s) passed to plot_quick_look
+    figsize            : (width, height)
+    """
+    import json as _json
+    import matplotlib.dates as mdates
+    from matplotlib.widgets import Button
+
+    if pad_from_partition and not isinstance(pad_from_partition, bool):
+        pad_sec, pad_from_partition = pad_from_partition, True
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    def _write_json():
+        with open(json_path, 'w') as f:
+            _json.dump(labels, f, indent=2, sort_keys=True)
+
+    if orbits is None:
+        orbits = sorted(
+            int(orb_str) for orb_str, entry in labels.items()
+            if any(category is None or ev.get('category') == category
+                   for ev in entry.get('loading_events', []))
+        )
+
+    sp = tuple(species) if species else ()
+    _CLICK_COLORS = ['limegreen', 'purple', 'purple', 'red']
+    _CLICK_STYLES = ['-', ':', '-.', '--']
+    _CLICK_LABELS = ['UNLOADING START', 'Bz PEAK', 'Bz RECOVERY', 'UNLOADING COMPLETE']
+
+    queue = []
+    for orb in orbits:
+        orb_str = str(orb)
+        entry = labels.get(orb_str, {})
+        events = entry.get('loading_events', [])
+        try:
+            orb_df = load_bowers_data_pkl(orbit_number=orb)
+        except Exception as exc:
+            print(f'Orbit {orb}: skipped ({exc})')
+            continue
+        seg = filter_orbit_segment(orb_df)
+        if seg.empty:
+            continue
+        for idx, ev in enumerate(events):
+            if category is not None and ev.get('category') != category:
+                continue
+            if skip_marked_events and ev.get('bz_manually_reviewed') is True:
+                continue
+            queue.append({'orb': orb, 'idx': idx, 'ev': ev, 'orb_df': orb_df, 'seg': seg})
+
+    if order_by == 'z':
+        def _abs_z_at_partition(item):
+            ev_ = item['ev']
+            t_part_ = pd.Timestamp(ev_.get('partition', ev_['start']))
+            t_seg_ = pd.to_datetime(item['seg']['time']).to_numpy()
+            j = int(np.clip(np.searchsorted(t_seg_, np.datetime64(t_part_)), 0, len(t_seg_) - 1))
+            return abs(float(item['seg']['ephz'].iloc[j]))
+        queue.sort(key=_abs_z_at_partition)
+
+    print(f'{len(queue)} event(s) queued.')
+
+    for item in queue:
+        orb, idx, ev, orb_df, seg = item['orb'], item['idx'], item['ev'], item['orb_df'], item['seg']
+
+        t_start = pd.Timestamp(ev['start'])
+        t_part  = pd.Timestamp(ev.get('partition', ev['start']))
+        t_stop  = pd.Timestamp(ev['stop'])
+
+        if pad_from_partition and pad_sec is not None:
+            pad_before, pad_after = _split_pad(pad_sec)
+            t_lo, t_hi = t_part - pd.Timedelta(seconds=pad_before), t_part + pd.Timedelta(seconds=pad_after)
+        elif pad_sec is not None:
+            pad_before, pad_after = _split_pad(pad_sec)
+            t_lo, t_hi = t_start - pd.Timedelta(seconds=pad_before), t_stop + pd.Timedelta(seconds=pad_after)
+        else:
+            t_lo, t_hi = t_start, t_stop
+
+        t_seg = pd.to_datetime(seg['time'])
+        plot_seg = seg[(t_seg >= t_lo) & (t_seg <= t_hi)]
+        if plot_seg.empty:
+            print(f'Orbit {orb} event {idx}: no data in window, skipping')
+            continue
+
+        auto_hemisphere = 'north' if plot_seg['magx'].mean() > 0 else 'south'
+        state = {
+            'clicks': [],
+            'artists': [],
+            'hemisphere': ev.get('lobe', auto_hemisphere),
+        }
+        for _field in ('bz_unloading_start', 'bz_negative_onset', 'bz_recovery_time', 'bz_unloading_stop'):
+            _val = ev.get(_field)
+            if _val:
+                state['clicks'].append(pd.Timestamp(_val))
+
+        fig = plot_quick_look(df=plot_seg, orbit=orb, df_full=orb_df, species=sp, figsize=figsize,
+                              show_kt17=show_kt17, show_kt17_residual=show_kt17_residual,
+                              show_loading=False, ylim_mag=ylim_mag, tick_time_fmt='%H:%M:%S',
+                              use_hires_mag=use_hires_mag, smooth_sec=smooth_sec, _show=False)
+        if hide_legend:
+            for ax in fig._data_axes:
+                legend = ax.get_legend()
+                if legend is not None:
+                    legend.remove()
+
+        fig.subplots_adjust(bottom=0.20)
+        click_axes = fig._data_axes
+
+        def _redraw():
+            for a in state['artists']:
+                try: a.remove()
+                except Exception: pass
+            state['artists'].clear()
+            for i, ts in enumerate(sorted(state['clicks'])):
+                for ax in click_axes:
+                    state['artists'].append(
+                        ax.axvline(ts, color=_CLICK_COLORS[i], lw=1.5, ls=_CLICK_STYLES[i], zorder=4))
+            fig.canvas.draw_idle()
+
+        def _update_title():
+            n = len(state['clicks'])
+            hemi_str = state['hemisphere'].capitalize()
+            date_str = t_start.strftime('%Y-%m-%d')
+            if n < 3:
+                msg = f'Click {_CLICK_LABELS[n]}'
+            elif n == 3:
+                msg = f'Click {_CLICK_LABELS[3]} (optional), or Save & Next'
+            else:
+                msg = 'Ready to save (Undo to re-click)'
+            fig.suptitle(f'Orbit {orb}  —  {date_str}  —  event {idx}  —  {hemi_str}ern lobe  —  {msg}',
+                        fontsize=10, color='darkgreen')
+            fig.canvas.draw_idle()
+
+        _redraw()
+        _update_title()
+
+        ax_save   = fig.add_axes([0.15, 0.02, 0.14, 0.04])
+        ax_none   = fig.add_axes([0.30, 0.02, 0.16, 0.04])
+        ax_toggle = fig.add_axes([0.47, 0.02, 0.14, 0.04])
+        ax_undo   = fig.add_axes([0.62, 0.02, 0.08, 0.04])
+        ax_skip   = fig.add_axes([0.71, 0.02, 0.08, 0.04])
+
+        btn_save   = Button(ax_save,   'Save & Next ✓', color='#d4f0d4', hovercolor='#90e090')
+        btn_none   = Button(ax_none,   'No recovery',   color='#f0d4d4', hovercolor='#e08080')
+        btn_toggle = Button(ax_toggle, 'Toggle N/S',    color='#d4d4f0', hovercolor='#8080e0')
+        btn_undo   = Button(ax_undo,   'Undo',          color='#fffacd', hovercolor='#f0e060')
+        btn_skip   = Button(ax_skip,   'Skip',          color='#e8e8e8', hovercolor='#c0c0c0')
+
+        def _save(_ev):
+            n = len(state['clicks'])
+            if n not in (3, 4):
+                print(f'  Orbit {orb} event {idx}: need 3 or 4 clicks before saving (have {n}).')
+                return
+            ts = sorted(state['clicks'])
+            t_unload_start, t_neg, t_pos = ts[0], ts[1], ts[2]
+            t_unload_stop = ts[3] if n == 4 else None
+            delay_sec = (t_pos - t_neg).total_seconds()
+            ev['bz_unloading_start']     = t_unload_start.isoformat()
+            ev['bz_negative_onset']      = t_neg.isoformat()
+            ev['bz_recovery_time']       = t_pos.isoformat()
+            ev['bz_recovery_sec']        = delay_sec
+            ev['bz_unloading_stop']      = t_unload_stop.isoformat() if t_unload_stop is not None else None
+            ev['lobe']                   = state['hemisphere']
+            ev['bz_no_recovery']         = False
+            ev['recovery_time_computed'] = False
+            ev['bz_manually_reviewed']   = True
+            _write_json()
+            print(f'  Orbit {orb} event {idx}: saved (Bz recovery = {delay_sec:.1f}s, '
+                  f'{state["hemisphere"]}ern lobe'
+                  f'{"" if t_unload_stop is not None else ", unloading-complete not marked"})')
+            plt.close(fig)
+
+        def _no_recovery(_ev):
+            ev['bz_no_recovery']         = True
+            ev['bz_recovery_sec']        = None
+            ev['bz_recovery_time']       = None
+            ev['bz_negative_onset']      = None
+            ev['bz_unloading_start']     = None
+            ev['bz_unloading_stop']      = None
+            ev['lobe']                   = state['hemisphere']
+            ev['recovery_time_computed'] = False
+            ev['bz_manually_reviewed']   = True
+            _write_json()
+            print(f'  Orbit {orb} event {idx}: marked no discernible recovery '
+                  f'({state["hemisphere"]}ern lobe)')
+            plt.close(fig)
+
+        def _toggle(_ev):
+            state['hemisphere'] = 'south' if state['hemisphere'] == 'north' else 'north'
+            _update_title()
+
+        def _undo(_ev):
+            if state['clicks']:
+                state['clicks'].pop()
+            _redraw()
+            _update_title()
+
+        def _skip(_ev):
+            print(f'  Orbit {orb} event {idx}: skipped (not saved)')
+            plt.close(fig)
+
+        def on_click(event):
+            if event.inaxes not in click_axes or event.xdata is None:
+                return
+            if len(state['clicks']) >= 4:
+                return
+            ts = pd.Timestamp(mdates.num2date(event.xdata).replace(tzinfo=None))
+            state['clicks'].append(ts)
+            _redraw()
+            _update_title()
+
+        btn_save.on_clicked(_save)
+        btn_none.on_clicked(_no_recovery)
+        btn_toggle.on_clicked(_toggle)
+        btn_undo.on_clicked(_undo)
+        btn_skip.on_clicked(_skip)
+
+        cid = fig.canvas.mpl_connect('button_press_event', on_click)
+        plt.show(block=True)
+        fig.canvas.mpl_disconnect(cid)
+
+    print('Done reviewing all queued events.')
+
+
+def plot_bz_recovery_vs_x(json_path=None, category='a', orbits=None, x_ref='partition', n_bins=8,
+                          invert_xaxis=True, show_fit=False, x_max=-1.5, stdev_max=2,
+                          v_alfven=2700, smooth_sec=1, search_pad_sec=120,
+                          hist_save_path=None, save_path=None):
+    """
+    Plot Bz recovery time as a function of the spacecraft's X position (R_M, MSM).
+
+    Only events with a category matching `category` (or any category, if None),
+    a labelled 'bz_unloading_start', AND Bz > 0 at the unloading-start time
+    (i.e. the unloading genuinely starts from a positive Bz baseline) are
+    included. The plotted delay is computed directly from the MAG data, not
+    from the stored 'bz_recovery_time' (which may be an imprecise manual click
+    or peak-relative auto-detection): starting at bz_unloading_start, this
+    finds the first sample where (boxcar-smoothed) Bz goes negative, then the
+    first sample after that where it recovers to >= 0 — the delay is the time
+    from bz_unloading_start to that computed recovery crossing. Shows
+    individual events as points plus a binned average ± standard deviation line.
+
+    Parameters
+    ----------
+    json_path    : str or None — labelling JSON to read
+                   (default: human_loading_labels_new.json)
+    category     : str or None — only include events with this category
+                   (default 'a'); None includes every category
+    orbits       : list[int] or None — if given, only include events from these
+                   orbit numbers; None (default) includes every orbit in json_path
+    x_ref        : which X value to use per event:
+                     'partition' (default) — X at the event's partition time
+                     'bz_peak'             — X at the event's bz_negative_onset time
+                     'mean'                — mean X over [start, stop]
+    n_bins       : int — number of bins for the binned average ± std line
+    invert_xaxis : bool — invert the x-axis so more negative X is on the right
+                   (default True)
+    show_fit     : bool — overlay a straight (least-squares) line of best fit
+                   through the individual events, with R² in its legend label
+    x_max        : float or None — events with X > x_max are treated as outliers:
+                   greyed out and excluded from the fit (default -1.5); None disables
+                   this cut
+    stdev_max    : float or None — events whose delay is more than stdev_max standard
+                   deviations from the mean delay are treated as outliers (default 2);
+                   None disables this cut
+    v_alfven     : float — Alfven speed in km/s, used to convert each non-outlier
+                   event's delay (bz_unloading_start to the computed recovery
+                   crossing) into a predicted near-Mercury neutral line (NMNL)
+                   location: X_NMNL = X_0 + delay_sec * v_alfven (converted to
+                   R_M), where X_0 is the spacecraft's X position at the computed
+                   recovery crossing (default 2500 km/s)
+    smooth_sec   : boxcar smoothing window (s) applied to Bz before finding the
+                   negative-onset / recovery crossings (default 1)
+    search_pad_sec : float — how far past the event's 'stop' time to keep searching
+                   for the recovery crossing (default 120s)
+    hist_save_path : str or None — where to save the second figure, a histogram of
+                   X_NMNL for the non-outlier events (default:
+                   <script_dir>/figures/x_nmnl_hist.png)
+    save_path    : str or None — defaults to <script_dir>/figures/bz_recovery_vs_x.png
+
+    Returns (fig, fig_hist) — the recovery-vs-X figure and the X_NMNL histogram figure.
+    """
+    import json as _json
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+    if x_ref not in ('partition', 'bz_peak', 'mean'):
+        raise ValueError("x_ref must be 'partition', 'bz_peak', or 'mean'")
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    orbit_set = set(orbits) if orbits is not None else None
+
+    xs, delays, x0_recovery = [], [], []
+    for orb_str, entry in labels.items():
+        if orbit_set is not None and int(orb_str) not in orbit_set:
+            continue
+        for ev in entry.get('loading_events', []):
+            if category is not None and ev.get('category') != category:
+                continue
+            t_unload_start = ev.get('bz_unloading_start')
+            if t_unload_start is None or ev.get('stop') is None:
+                continue
+
+            try:
+                orb_df = load_bowers_data_pkl(orbit_number=int(orb_str))
+            except Exception as exc:
+                print(f'Orbit {orb_str}: skipped ({exc})')
+                continue
+            t = pd.to_datetime(orb_df['time'])
+            t_arr = t.to_numpy()
+
+            t_unload_start_ts = pd.Timestamp(t_unload_start)
+            idx_start = int(np.clip(np.searchsorted(t_arr, np.datetime64(t_unload_start_ts)),
+                                    0, len(t_arr) - 1))
+            magz = orb_df['magz'].to_numpy().astype(float)
+            if magz[idx_start] <= 0:
+                continue   # unloading must start from a positive Bz baseline
+
+            dt_s = (float(np.median(np.diff(t_arr).astype('timedelta64[ns]').astype(float) / 1e9))
+                   if len(t_arr) > 1 else 1.0)
+            win = int(round(smooth_sec / dt_s)) if smooth_sec else 1
+            if win > 1:
+                kernel = np.ones(win) / win
+                pad = win // 2
+                Bz = np.convolve(np.pad(magz, pad, mode='reflect'), kernel, mode='valid')[:len(magz)]
+            else:
+                Bz = magz
+
+            search_hi = np.datetime64(pd.Timestamp(ev['stop']) + pd.Timedelta(seconds=search_pad_sec))
+            neg_candidates = np.where((t_arr >= np.datetime64(t_unload_start_ts)) &
+                                      (t_arr <= search_hi) & (Bz < 0))[0]
+            if neg_candidates.size == 0:
+                continue   # Bz never actually goes negative after unloading start
+            idx_neg = neg_candidates[0]
+            rec_candidates = np.where((t_arr >= t_arr[idx_neg]) & (t_arr <= search_hi) & (Bz >= 0))[0]
+            rec_candidates = rec_candidates[rec_candidates > idx_neg]
+            if rec_candidates.size == 0:
+                continue   # Bz never recovers within the search window
+            idx_pos = rec_candidates[0]
+            t_pos_ts = pd.Timestamp(t_arr[idx_pos])
+            delay = (t_pos_ts - t_unload_start_ts).total_seconds()
+
+            if x_ref == 'mean':
+                t_start = pd.Timestamp(ev['start'])
+                t_stop  = pd.Timestamp(ev['stop'])
+                mask = (t >= t_start) & (t <= t_stop)
+                if not mask.any():
+                    continue
+                x = orb_df['ephx'].to_numpy()[mask.to_numpy()].mean()
+            else:
+                field = 'partition' if x_ref == 'partition' else 'bz_negative_onset'
+                t_ref = ev.get(field)
+                if t_ref is None:
+                    continue
+                t_ref = pd.Timestamp(t_ref)
+                idx = int(np.clip(np.searchsorted(t.to_numpy(), np.datetime64(t_ref)), 0, len(t) - 1))
+                x = orb_df['ephx'].iloc[idx]
+
+            x0_recovery.append(orb_df['ephx'].iloc[idx_pos])
+
+            xs.append(x)
+            delays.append(delay)
+
+    xs = np.array(xs)
+    delays = np.array(delays)
+    x0_recovery = np.array(x0_recovery)
+    print(f'{len(xs)} event(s) with a valid delay and X position.')
+
+    outlier = np.zeros(len(xs), dtype=bool)
+    if x_max is not None:
+        outlier |= xs > x_max
+    if stdev_max is not None and len(delays) > 1:
+        outlier |= np.abs(delays - delays.mean()) > stdev_max * delays.std()
+    good = ~outlier
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(xs[good], delays[good], color='tab:blue', alpha=0.6, label='individual events')
+    if outlier.any():
+        ax.scatter(xs[outlier], delays[outlier], color='grey', alpha=0.5, label='excluded (outlier)')
+
+    bin_mask = xs <= x_max if x_max is not None else np.ones(len(xs), dtype=bool)
+    xs_bin, delays_bin = xs[bin_mask], delays[bin_mask]
+    if len(xs_bin) > 1:
+        bins = np.linspace(xs_bin.min(), xs_bin.max(), n_bins + 1)
+        bin_idx = np.digitize(xs_bin, bins)
+        bin_centers, bin_means, bin_stds = [], [], []
+        for i in range(1, len(bins)):
+            mask = bin_idx == i
+            if mask.sum() > 0:
+                bin_centers.append(0.5 * (bins[i - 1] + bins[i]))
+                bin_means.append(delays_bin[mask].mean())
+                bin_stds.append(delays_bin[mask].std())
+        ax.errorbar(bin_centers, bin_means, yerr=bin_stds, color='tab:red', lw=2, marker='o',
+                    capsize=4, label='binned average ± std')
+
+    if show_fit and good.sum() > 1:
+        fit_x, fit_y = xs[good], delays[good]
+        slope, intercept = np.polyfit(fit_x, fit_y, 1)
+        fit_vals = slope * fit_x + intercept
+        ss_res = np.sum((fit_y - fit_vals) ** 2)
+        ss_tot = np.sum((fit_y - fit_y.mean()) ** 2)
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+        x_line = np.linspace(fit_x.min(), fit_x.max(), 100)
+        ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, ls='--',
+                label=f'linear fit (R$^2$={r2:.2f})')
+
+    x_label = {'partition': 'X (R$_M$, MSM) at partition time',
+              'bz_peak':   'X (R$_M$, MSM) at Bz peak time',
+              'mean':      'mean X (R$_M$, MSM) over event'}[x_ref]
+    ax.set_xlabel(x_label)
+    ax.set_ylabel('Bz recovery time (s)')
+    cat_str = category if category is not None else 'any'
+    ax.set_title(f'Bz recovery time vs X position ({cat_str}-type events)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    if invert_xaxis:
+        ax.invert_xaxis()
+    fig.tight_layout()
+
+    if save_path is None:
+        save_dir = os.path.join(_SCRIPT_DIR, 'figures')
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, 'bz_recovery_vs_x.png')
+    fig.savefig(save_path, dpi=150)
+    print(f'Saved: {save_path}')
+
+    # ── Predicted near-Mercury neutral line (NMNL) location ──────────────────
+    R_MERCURY_KM = 2439.7
+    x_nmnl = x0_recovery + (delays * v_alfven) / R_MERCURY_KM
+    x_nmnl_good = x_nmnl[good]
+
+    fig_hist, ax_hist = plt.subplots(figsize=(8, 5))
+    ax_hist.hist(x_nmnl_good, bins=n_bins, color='tab:purple', alpha=0.7, edgecolor='black')
+    if len(x_nmnl_good) > 0:
+        mean_nmnl = x_nmnl_good.mean()
+        ax_hist.axvline(mean_nmnl, color='red', lw=1.5, ls='--',
+                        label=f'mean={mean_nmnl:.2f} R$_M$')
+        ax_hist.legend()
+    ax_hist.set_xlabel('X$_{NMNL}$ (R$_M$, MSM)')
+    ax_hist.set_ylabel('Count')
+    ax_hist.set_title(f'Predicted NMNL location ({cat_str}-type events, '
+                      f'v$_A$={v_alfven} km/s, n={len(x_nmnl_good)})')
+    ax_hist.grid(True, alpha=0.3)
+    fig_hist.tight_layout()
+
+    if hist_save_path is None:
+        hist_save_dir = os.path.join(_SCRIPT_DIR, 'figures')
+        os.makedirs(hist_save_dir, exist_ok=True)
+        hist_save_path = os.path.join(hist_save_dir, 'x_nmnl_hist.png')
+    fig_hist.savefig(hist_save_path, dpi=150)
+    print(f'Saved: {hist_save_path}')
+
+    return fig, fig_hist
+
+
+def _save_bz_auto_panel(orb_df, t_lo, t_hi, vlines, title, out_path, show_kt17=True, dpi=150):
+    """Single-panel Bx/By/Bz (+ optional KT17) plot with vlines, for
+    plot_bz_recovery_vs_x_auto's summary/rejection-example plots.
+
+    vlines : list of (timestamp, color, linestyle, label) tuples.
+    Returns True if a figure was saved, False if the window had no data.
+    """
+    import matplotlib.dates as _mdates
+
+    t_all = pd.to_datetime(orb_df['time'])
+    mask = (t_all >= t_lo) & (t_all <= t_hi)
+    seg = orb_df[mask]
+    if seg.empty:
+        return False
+    t_seg = pd.to_datetime(seg['time'])
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(t_seg, seg['magx'], color='red',   lw=0.8, label='Bx')
+    ax.plot(t_seg, seg['magy'], color='green', lw=0.8, label='By')
+    ax.plot(t_seg, seg['magz'], color='blue',  lw=0.8, label='Bz')
+
+    if show_kt17:
+        try:
+            _, Bxm, Bym, Bzm = get_kt17_along_track(df=seg)
+            ax.plot(t_seg, Bxm, color='red',   lw=0.8, ls='--', alpha=0.6, label='Bx KT17')
+            ax.plot(t_seg, Bym, color='green', lw=0.8, ls='--', alpha=0.6, label='By KT17')
+            ax.plot(t_seg, Bzm, color='blue',  lw=0.8, ls='--', alpha=0.6, label='Bz KT17')
+        except Exception as e:
+            print(f'    KT17 unavailable: {e}')
+
+    ax.axhline(0, color='k', lw=0.4, alpha=0.4)
+    for t_v, color, ls, vlabel in vlines:
+        ax.axvline(t_v, color=color, lw=1.5, ls=ls, zorder=5, label=vlabel)
+
+    ax.set_ylabel('B (nT)')
+    ax.set_title(title, fontsize=9)
+    ax.legend(loc='upper right', fontsize=6, ncol=2)
+    ax.grid(True, alpha=0.3)
+    ax.xaxis.set_major_formatter(_mdates.DateFormatter('%H:%M:%S'))
+    fig.autofmt_xdate(rotation=30, ha='right')
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    return True
+
+
+def plot_bz_recovery_vs_x_auto(json_path=None, z_range=(-0.5, 0.5),
+                               min_loading_positive_frac=0.5,
+                               pre_partition_window_sec=30, pre_partition_min_positive_sec=5,
+                               min_negative_dip_sec=2, search_pad_sec=30, smooth_sec=1,
+                               require_bx_decreasing=True,
+                               x_ref='partition', n_bins=8, invert_xaxis=True, show_fit=False,
+                               x_max=None, stdev_max=None,
+                               save_event_plots=False, event_plot_dir=None, event_plot_pad_sec=30,
+                               n_rejection_examples=0, rejection_plot_dir=None, show_kt17=True,
+                               save_path=None):
+    """
+    Fully automated Bz-recovery-time vs X plot — no manual labelling involved.
+
+    Unlike measure_bz_recovery / label_bz_recovery / plot_bz_recovery_vs_x,
+    this NEVER writes to json_path (read-only) and doesn't use any of
+    'bz_unloading_start' / 'bz_negative_onset' / 'bz_recovery_time' /
+    'bz_recovery_sec' / 'lobe' etc. Everything is recomputed from scratch
+    from the MAG data each call, purely to see what a fully automatic
+    sort/selection looks like for comparison against the manual/hybrid results.
+
+    For every event in json_path (any category), the pipeline is:
+      1. Z filter: keep only events with Z_MSM at the partition time inside
+         z_range (default (-0.5, 0.5)) — focuses on near-equatorial crossings.
+      2. Majority positive during loading: over [start, partition], the
+         fraction of (boxcar-smoothed) Bz samples > 0 must exceed
+         min_loading_positive_frac (default 0.5) — a clean, stable event.
+      3. Stable immediately pre-partition: over the pre_partition_window_sec
+         (default 30s) leading up to partition, Bz must be positive for a
+         cumulative total of more than pre_partition_min_positive_sec
+         (default 5s) — confirms Bz is coherently positive right before
+         unloading starts.
+      4. Genuine negative dip: within search_pad_sec of the partition time,
+         there must be a *contiguous* run of negative Bz lasting at least
+         min_negative_dip_sec (default 2s), and Bz must actually recover to
+         positive again within the search window (a dip still negative at
+         the search boundary doesn't count).
+      5. |Bx| decreasing: if require_bx_decreasing (default True), a linear
+         fit of |Bx| over the dip/recovery interval (from when Bz first goes
+         negative to when it recovers) must have a negative slope — i.e. |Bx|
+         is decreasing on average, consistent with the tail relaxing toward a
+         more dipolar configuration during unloading.
+      6. Recovery time = the duration of that qualifying negative run —
+         from when Bz first goes negative to when it first becomes positive
+         again.
+
+    Parameters
+    ----------
+    json_path         : str or None — labelling JSON to read (read-only!)
+                        (default: human_loading_labels_new.json)
+    z_range           : (zmin, zmax) — only events with Z_MSM at the partition
+                        time in this range are considered (default (-0.5, 0.5))
+    min_loading_positive_frac : float — minimum fraction of [start, partition]
+                        samples with Bz > 0 (default 0.5)
+    pre_partition_window_sec  : float — window before partition to check for
+                        sustained positive Bz (default 30s)
+    pre_partition_min_positive_sec : float — minimum cumulative seconds of
+                        Bz > 0 within that window (default 5s)
+    min_negative_dip_sec      : float — minimum contiguous negative-Bz run
+                        duration after partition to count as a genuine dip
+                        (default 2s)
+    search_pad_sec    : float — how long after the partition time to keep
+                        searching for the genuine negative dip and its
+                        recovery (i.e. the search window is
+                        [partition, partition + search_pad_sec]) (default 120s)
+    smooth_sec        : boxcar smoothing window (s) applied to Bz before all
+                        of the above tests (default 1)
+    require_bx_decreasing : bool — if True (default), reject events where a
+                        linear fit of |Bx| over the negative-dip/recovery
+                        interval doesn't have a negative slope (i.e. |Bx| is
+                        not decreasing on average during unloading)
+    x_ref             : which X value to use per qualifying event:
+                        'partition' (default) — X at the event's partition time
+                        'bz_onset'            — X when Bz first goes negative
+                        'mean'                — mean X over [start, stop]
+    n_bins            : int — number of bins for the binned average ± std line
+    invert_xaxis      : bool — invert the x-axis so more negative X is on the
+                        right (default True)
+    show_fit          : bool — overlay a straight (least-squares) line of best
+                        fit through the individual events, with R² in its
+                        legend label
+    x_max             : float or None — events with X > x_max are excluded
+                        from the fit (shown grey), as in plot_bz_recovery_vs_x
+                        (default None — no cut)
+    stdev_max         : float or None — events whose delay is more than
+                        stdev_max standard deviations from the mean delay are
+                        excluded from the fit (default None — no cut)
+    save_event_plots  : bool — if True, save a single-panel Bx/By/Bz (+ KT17)
+                        summary plot for every event that passes all 4 filters,
+                        spanning [start - event_plot_pad_sec, recovery +
+                        event_plot_pad_sec], with vlines for start/partition/
+                        stop and the recovery interval's start/end
+    event_plot_dir    : str or None — defaults to
+                        <script_dir>/figures/bz_recovery_auto/
+    event_plot_pad_sec : float — padding (s) before start / after the computed
+                        recovery time for the passing-event summary plots
+                        (default 30)
+    n_rejection_examples : int — if > 0, save up to this many example plots
+                        for events REJECTED at each of the 5 filtering stages
+                        (Z filter, majority-positive-loading, pre-partition
+                        stability, genuine-dip, |Bx|-decreasing) — 5 x
+                        n_rejection_examples plots total at most, one sub-set
+                        per stage, each titled with why it was rejected
+                        (default 0 — none saved)
+    rejection_plot_dir : str or None — defaults to
+                        <script_dir>/figures/bz_recovery_auto_rejected/
+    show_kt17         : bool — include the dashed KT17 model field in the
+                        event/rejection panel plots (default True)
+    save_path         : str or None — defaults to
+                        <script_dir>/figures/bz_recovery_vs_x_auto.png
+
+    Returns (fig, results) where results is a list of dicts:
+        {'orbit', 'event_index', 'delay_sec', 'x'}
+    """
+    import json as _json
+
+    if json_path is None:
+        json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
+    if x_ref not in ('partition', 'bz_onset', 'mean'):
+        raise ValueError("x_ref must be 'partition', 'bz_onset', or 'mean'")
+
+    with open(json_path) as f:
+        labels = _json.load(f)
+
+    if save_event_plots:
+        if event_plot_dir is None:
+            event_plot_dir = os.path.join(_SCRIPT_DIR, 'figures', 'bz_recovery_auto')
+        os.makedirs(event_plot_dir, exist_ok=True)
+    if n_rejection_examples:
+        if rejection_plot_dir is None:
+            rejection_plot_dir = os.path.join(_SCRIPT_DIR, 'figures', 'bz_recovery_auto_rejected')
+        os.makedirs(rejection_plot_dir, exist_ok=True)
+    rejection_counts = {'z': 0, 'load': 0, 'pre': 0, 'dip': 0, 'bx': 0}
+    n_event_plots = 0
+
+    def _maybe_save_rejection(stage, orb_str, ev_idx, orb_df, t_lo, t_hi, vlines, reason):
+        if not n_rejection_examples or rejection_counts[stage] >= n_rejection_examples:
+            return
+        title = f'REJECTED ({stage}) — Orbit {orb_str} event {ev_idx}  —  {reason}'
+        out_path = os.path.join(rejection_plot_dir, f'{stage}_orbit_{int(orb_str):05d}_ev{ev_idx}.png')
+        if _save_bz_auto_panel(orb_df, t_lo, t_hi, vlines, title, out_path, show_kt17=show_kt17):
+            rejection_counts[stage] += 1
+
+    zmin, zmax = z_range
+    n_seen = n_zpass = n_loadpass = n_prepass = n_dippass = n_bxpass = 0
+
+    xs, delays, results = [], [], []
+    for orb_str, entry in labels.items():
+        for ev_idx, ev in enumerate(entry.get('loading_events', [])):
+            if 'partition' not in ev or 'start' not in ev or 'stop' not in ev:
+                continue
+            n_seen += 1
+
+            t_start = pd.Timestamp(ev['start'])
+            t_part  = pd.Timestamp(ev['partition'])
+            t_stop  = pd.Timestamp(ev['stop'])
+            _basic_vlines = [(t_start, 'limegreen', '-', 'start'),
+                             (t_part,  'orange',    '--', 'partition'),
+                             (t_stop,  'red',       '--', 'stop')]
+            _plot_pad = pd.Timedelta(seconds=30)
+
+            try:
+                orb_df = load_bowers_data_pkl(orbit_number=int(orb_str))
+            except Exception:
+                continue
+            t = pd.to_datetime(orb_df['time'])
+            t_arr = t.to_numpy()
+
+            idx_part = int(np.clip(np.searchsorted(t_arr, np.datetime64(t_part)), 0, len(t_arr) - 1))
+            z_part = float(orb_df['ephz'].iloc[idx_part])
+            if not (zmin < z_part < zmax):
+                _maybe_save_rejection('z', orb_str, ev_idx, orb_df, t_start - _plot_pad, t_stop + _plot_pad,
+                                      _basic_vlines, f'Z(partition)={z_part:.2f}, not in {z_range}')
+                continue
+            n_zpass += 1
+
+            magz = orb_df['magz'].to_numpy().astype(float)
+            dt_s = (float(np.median(np.diff(t_arr).astype('timedelta64[ns]').astype(float) / 1e9))
+                   if len(t_arr) > 1 else 1.0)
+            win = int(round(smooth_sec / dt_s)) if smooth_sec else 1
+            if win > 1:
+                kernel = np.ones(win) / win
+                pad = win // 2
+                Bz = np.convolve(np.pad(magz, pad, mode='reflect'), kernel, mode='valid')[:len(magz)]
+            else:
+                Bz = magz
+
+            # 2. majority positive during loading [start, partition]
+            load_mask = (t_arr >= np.datetime64(t_start)) & (t_arr <= np.datetime64(t_part))
+            if load_mask.sum() == 0:
+                continue
+            pos_frac = (Bz[load_mask] > 0).sum() / load_mask.sum()
+            if pos_frac <= min_loading_positive_frac:
+                _maybe_save_rejection('load', orb_str, ev_idx, orb_df, t_start - _plot_pad, t_stop + _plot_pad,
+                                      _basic_vlines,
+                                      f'{pos_frac:.0%} positive during loading (need >{min_loading_positive_frac:.0%})')
+                continue
+            n_loadpass += 1
+
+            # 3. cumulative positive Bz for > pre_partition_min_positive_sec within
+            #    pre_partition_window_sec before partition
+            pre_lo = np.datetime64(t_part - pd.Timedelta(seconds=pre_partition_window_sec))
+            pre_mask = (t_arr >= pre_lo) & (t_arr <= np.datetime64(t_part))
+            if pre_mask.sum() == 0:
+                continue
+            pos_time_sec = (Bz[pre_mask] > 0).sum() * dt_s
+            if pos_time_sec <= pre_partition_min_positive_sec:
+                _pre_vlines = _basic_vlines + [(pd.Timestamp(pre_lo), 'purple', ':', 'pre-window start')]
+                _maybe_save_rejection('pre', orb_str, ev_idx, orb_df, t_start - _plot_pad, t_stop + _plot_pad,
+                                      _pre_vlines,
+                                      f'only {pos_time_sec:.1f}s positive in last {pre_partition_window_sec}s '
+                                      f'(need >{pre_partition_min_positive_sec}s)')
+                continue
+            n_prepass += 1
+
+            # 4. first contiguous negative run after partition lasting >= min_negative_dip_sec,
+            #    that actually recovers to positive within the search window
+            search_hi = np.datetime64(t_part + pd.Timedelta(seconds=search_pad_sec))
+            post_mask = (t_arr >= np.datetime64(t_part)) & (t_arr <= search_hi)
+            post_idx = np.where(post_mask)[0]
+            if post_idx.size == 0:
+                continue
+            neg_bool = Bz[post_idx] < 0
+            padded = np.concatenate(([False], neg_bool, [False]))
+            run_diffs  = np.diff(padded.astype(int))
+            run_starts = np.where(run_diffs == 1)[0]
+            run_ends   = np.where(run_diffs == -1)[0]   # first non-negative sample after each run
+            run_lengths_sec = (run_ends - run_starts) * dt_s
+            valid = (run_lengths_sec >= min_negative_dip_sec) & (run_ends < len(neg_bool))
+            if not valid.any():
+                _maybe_save_rejection('dip', orb_str, ev_idx, orb_df, t_start - _plot_pad,
+                                      pd.Timestamp(search_hi) + _plot_pad, _basic_vlines,
+                                      f'no negative run >= {min_negative_dip_sec}s with a recovery '
+                                      f'within {search_pad_sec}s of partition')
+                continue
+            n_dippass += 1
+
+            first_valid = int(np.argmax(valid))
+            idx_neg = post_idx[run_starts[first_valid]]
+            idx_pos = post_idx[run_ends[first_valid]]
+
+            # If the qualifying run's start coincides with the very first sample
+            # of the post-partition search window, Bz may already have been
+            # negative before partition (partition doesn't always land exactly
+            # at the Bz sign change) — walk backward through the raw timeseries
+            # to find the run's true start, bounded by the event's own start
+            # time, instead of truncating it at partition.
+            if run_starts[first_valid] == 0:
+                t_start_np = np.datetime64(t_start)
+                while idx_neg > 0 and Bz[idx_neg - 1] < 0 and t_arr[idx_neg - 1] >= t_start_np:
+                    idx_neg -= 1
+
+            t_neg_onset = pd.Timestamp(t_arr[idx_neg])
+            t_recovery  = pd.Timestamp(t_arr[idx_pos])
+
+            # 5. |Bx| must be decreasing on average over the dip/recovery interval
+            if require_bx_decreasing:
+                bx_slice = np.abs(orb_df['magx'].to_numpy()[idx_neg:idx_pos + 1]).astype(float)
+                if len(bx_slice) >= 2:
+                    t_rel = ((t_arr[idx_neg:idx_pos + 1] - t_arr[idx_neg])
+                            .astype('timedelta64[ns]').astype(float) / 1e9)
+                    bx_slope = float(np.polyfit(t_rel, bx_slice, 1)[0])
+                else:
+                    bx_slope = 0.0   # can't fit a single point -> treat as not decreasing
+                if bx_slope >= 0:
+                    _dip_vlines = _basic_vlines + [
+                        (t_neg_onset, 'purple', ':',  'recovery interval start'),
+                        (t_recovery,  'purple', '-.', 'recovery interval end'),
+                    ]
+                    _maybe_save_rejection('bx', orb_str, ev_idx, orb_df, t_start - _plot_pad,
+                                          pd.Timestamp(search_hi) + _plot_pad, _dip_vlines,
+                                          f'|Bx| slope = {bx_slope:.3f} nT/s over the interval (not decreasing)')
+                    continue
+            n_bxpass += 1
+
+            delay = (t_recovery - t_neg_onset).total_seconds()
+
+            if x_ref == 'mean':
+                mask = (t_arr >= np.datetime64(t_start)) & (t_arr <= np.datetime64(t_stop))
+                x = float(orb_df['ephx'].to_numpy()[mask].mean())
+            elif x_ref == 'bz_onset':
+                x = float(orb_df['ephx'].iloc[idx_neg])
+            else:
+                x = float(orb_df['ephx'].iloc[idx_part])
+
+            xs.append(x)
+            delays.append(delay)
+            results.append({'orbit': int(orb_str), 'event_index': ev_idx, 'delay_sec': delay, 'x': x})
+
+            if save_event_plots:
+                event_vlines = _basic_vlines + [
+                    (t_neg_onset, 'purple', ':',  'recovery interval start'),
+                    (t_recovery,  'purple', '-.', 'recovery interval end'),
+                ]
+                title = (f'Orbit {orb_str}  —  event {ev_idx}  —  Z(partition)={z_part:.2f}  —  '
+                        f'recovery = {delay:.1f}s')
+                out_path = os.path.join(event_plot_dir, f'orbit_{int(orb_str):05d}_ev{ev_idx}.png')
+                pad = pd.Timedelta(seconds=event_plot_pad_sec)
+                if _save_bz_auto_panel(orb_df, t_start - pad, t_recovery + pad, event_vlines, title,
+                                       out_path, show_kt17=show_kt17):
+                    n_event_plots += 1
+
+    print(f'{n_seen} event(s) with start/partition/stop  ->  {n_zpass} pass Z filter  ->  '
+          f'{n_loadpass} pass majority-positive-loading  ->  {n_prepass} pass pre-partition '
+          f'stability  ->  {n_dippass} pass genuine-dip requirement  ->  '
+          f'{n_bxpass} pass |Bx|-decreasing requirement.')
+    if save_event_plots:
+        print(f'Saved {n_event_plots} passing-event summary plot(s) to {event_plot_dir}')
+    if n_rejection_examples:
+        print(f'Saved rejection examples to {rejection_plot_dir}: {rejection_counts}')
+
+    xs = np.array(xs)
+    delays = np.array(delays)
+
+    outlier = np.zeros(len(xs), dtype=bool)
+    if x_max is not None:
+        outlier |= xs > x_max
+    if stdev_max is not None and len(delays) > 1:
+        outlier |= np.abs(delays - delays.mean()) > stdev_max * delays.std()
+    good = ~outlier
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(xs[good], delays[good], color='tab:blue', alpha=0.6, label='individual events')
+    if outlier.any():
+        ax.scatter(xs[outlier], delays[outlier], color='grey', alpha=0.5, label='excluded (outlier)')
+
+    bin_mask = xs <= x_max if x_max is not None else np.ones(len(xs), dtype=bool)
+    xs_bin, delays_bin = xs[bin_mask], delays[bin_mask]
+    if len(xs_bin) > 1:
+        bins = np.linspace(xs_bin.min(), xs_bin.max(), n_bins + 1)
+        bin_idx = np.digitize(xs_bin, bins)
+        bin_centers, bin_means, bin_stds = [], [], []
+        for i in range(1, len(bins)):
+            mask = bin_idx == i
+            if mask.sum() > 0:
+                bin_centers.append(0.5 * (bins[i - 1] + bins[i]))
+                bin_means.append(delays_bin[mask].mean())
+                bin_stds.append(delays_bin[mask].std())
+        ax.errorbar(bin_centers, bin_means, yerr=bin_stds, color='tab:red', lw=2, marker='o',
+                    capsize=4, label='binned average ± std')
+
+    if show_fit and good.sum() > 1:
+        fit_x, fit_y = xs[good], delays[good]
+        slope, intercept = np.polyfit(fit_x, fit_y, 1)
+        fit_vals = slope * fit_x + intercept
+        ss_res = np.sum((fit_y - fit_vals) ** 2)
+        ss_tot = np.sum((fit_y - fit_y.mean()) ** 2)
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+        x_line = np.linspace(fit_x.min(), fit_x.max(), 100)
+        ax.plot(x_line, slope * x_line + intercept, color='black', lw=1.5, ls='--',
+                label=f'linear fit (R$^2$={r2:.2f})')
+
+    x_label = {'partition': 'X (R$_M$, MSM) at partition time',
+              'bz_onset':  'X (R$_M$, MSM) when Bz first goes negative',
+              'mean':      'mean X (R$_M$, MSM) over event'}[x_ref]
+    ax.set_xlabel(x_label)
+    ax.set_ylabel('Bz recovery time (s)')
+    ax.set_title(f'Bz recovery time vs X position (fully automated, |Z|<{max(abs(zmin), abs(zmax)):.1f})')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    if invert_xaxis:
+        ax.invert_xaxis()
+    fig.tight_layout()
+
+    if save_path is None:
+        save_dir = os.path.join(_SCRIPT_DIR, 'figures')
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, 'bz_recovery_vs_x_auto.png')
+    fig.savefig(save_path, dpi=150)
+    print(f'Saved: {save_path}')
+
+    return fig, results
 
 
 _SIM_EPOCH = pd.Timestamp('2000-01-01T00:00:00')
@@ -3091,7 +4561,8 @@ def plot_fac_events(json_path=None, save_dir=None, dpi=150, skip_no_events=True,
     plt.show()
 
 
-def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by_category=False):
+def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by_category=False,
+                   color_by_bz_recovery=False):
     """Plot YZ and lon/lat trajectory maps for a list of labelled events.
 
     If event_keys is None or empty, all events in the JSON are shown.
@@ -3106,11 +4577,16 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
                         ('a' or 'l') instead of a distinct colour per event;
                         events categorized 'n' are hidden, and uncategorized
                         events are skipped. Takes precedence over color_by_alt.
+    color_by_bz_recovery : bool  colour by the event's measure_bz_recovery
+                        'bz_recovery_sec' value (see measure_bz_recovery); only
+                        'a'-type events are shown, and events with no recovery
+                        time found are shown in grey. Takes precedence over
+                        color_by_category and color_by_alt.
     """
     import json as _json
     from matplotlib.collections import LineCollection
     from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
+    from matplotlib.colors import Normalize, LogNorm
 
     if json_path is None:
         json_path = os.path.join(_SCRIPT_DIR, 'human_loading_labels_new.json')
@@ -3139,8 +4615,29 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
         return orb, (events[ev_idx] if ev_idx < len(events) else None)
 
     _CATEGORY_COLORS = {'a': 'tab:red', 'l': 'tab:blue'}
+    _NO_RECOVERY_COLOR = 'lightgrey'
 
-    if color_by_category:
+    bz_cmap = plt.cm.viridis
+    bz_norm = None
+    if color_by_bz_recovery:
+        filtered_keys = []
+        event_colors  = []
+        delays = []
+        for key in event_keys:
+            _, ev = _resolve(key)
+            if not ev or ev.get('category') != 'a':   # only 'a'-type events
+                continue
+            filtered_keys.append(key)
+            delays.append(ev.get('bz_recovery_sec'))
+        event_keys = filtered_keys
+        valid_delays = [d for d in delays if d is not None]
+        if valid_delays:
+            bz_norm = LogNorm(vmin=1, vmax=100)
+            event_colors = [bz_cmap(bz_norm(d)) if d is not None else _NO_RECOVERY_COLOR
+                            for d in delays]
+        else:
+            event_colors = [_NO_RECOVERY_COLOR] * len(delays)
+    elif color_by_category:
         filtered_keys = []
         event_colors  = []
         for key in event_keys:
@@ -3159,7 +4656,7 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
 
     alt_cmap = plt.cm.plasma
     all_alts = []   # collected to set shared norm after first pass
-    color_by_alt = color_by_alt and not color_by_category
+    color_by_alt = color_by_alt and not (color_by_category or color_by_bz_recovery)
 
     # two-pass when color_by_alt: first collect all altitudes, then plot
     segments_xz, segments_yz, segments_ll, seg_alts = [], [], [], []
@@ -3209,7 +4706,12 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
             segments_ll.append((lon, lat, alt))
             all_alts.append(alt)
         else:
-            label = ev.get('category') if color_by_category else key
+            if color_by_bz_recovery:
+                label = 'no recovery time' if ev.get('bz_recovery_sec') is None else '_nolegend_'
+            elif color_by_category:
+                label = ev.get('category')
+            else:
+                label = key
             ax_xz.plot(X, Z, color=ev_color, lw=1.5, label=label)
             ax_xz.scatter(X[0],  Z[0],  color=ev_color, marker='o', s=20, zorder=5)
             ax_xz.scatter(X[-1], Z[-1], color=ev_color, marker='s', s=20, zorder=5)
@@ -3242,6 +4744,12 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
         sm = ScalarMappable(cmap=alt_cmap, norm=norm)
         sm.set_array([])
         fig.colorbar(sm, ax=[ax_xz, ax_yz, ax_ll], label='Altitude (R$_M$)',
+                     fraction=0.02, pad=0.02)
+
+    if color_by_bz_recovery and bz_norm is not None:
+        sm = ScalarMappable(cmap=bz_cmap, norm=bz_norm)
+        sm.set_array([])
+        fig.colorbar(sm, ax=[ax_xz, ax_yz, ax_ll], label='Bz recovery (s)',
                      fraction=0.02, pad=0.02)
 
     # XZ panel — Mercury outline (MSM: planet centre at Z = -0.2 R_M)
@@ -3282,9 +4790,10 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
     def _dedup_legend(ax):
         handles, labels = ax.get_legend_handles_labels()
         seen = dict(zip(labels, handles))   # keeps one handle per unique label
-        ax.legend(seen.values(), seen.keys(), fontsize=8)
+        if seen:
+            ax.legend(seen.values(), seen.keys(), fontsize=8)
 
-    if color_by_category:
+    if color_by_bz_recovery or color_by_category:
         _dedup_legend(ax_xz)
         _dedup_legend(ax_yz)
         _dedup_legend(ax_ll)
@@ -3301,21 +4810,36 @@ def plot_event_map(event_keys=None, json_path=None, color_by_alt=False, color_by
     plt.show()
 
 #browse_southward_orbits(1200, 2000, species=['H+'])
-#label_southward_orbits(944, 946, species=["H+"],json_path="equatorial_events.json", direction='south')
+#label_southward_orbits(2496, 4000, order_by='orbit', species=["H+"],json_path="equatorial_events.json", direction='south', z_range=(-0.8, 0.8))
 
-#plot_labelled_events(species=['H+'],json_path="equatorial_events.json", pad_sec=90, show_kt17=True, pad_from_partition=True, show_kt17_residual=False, figsize = (7,8))
+#plot_labelled_events(species=['H+'],json_path="equatorial_events.json", pad_sec=90, show_kt17=True, pad_from_partition=True, 
+#                     show_kt17_residual=False, figsize = (7,8)) #orbits=[850,1963,3540,3295,852], show_bz_recovery = True)
 
-measure_bz_recovery(json_path="equatorial_events.json", species=['H+'])
-#sort_loading_type(json_path="equatorial_events.json", species=["H+"], only_undesignated=False, partition_pad=30, show_kt17_residual=False, figsize = (12,8),only_show_type='a')
+#sort_loading_type(json_path="equatorial_events.json", species=["H+"], only_undesignated=True, partition_pad=40, show_kt17_residual=False, figsize = (12,8))
+#measure_bz_recovery(json_path="equatorial_events.json", species=None, analyze=True, use_hires_mag=True, pad_from_partition=[15,30],figsize=(8,8), order_by = 'z', hide_legend = True)
+#label_bz_recovery(json_path="equatorial_events.json", species=None, use_hires_mag=True,
+#                  pad_from_partition=[20, 40], order_by='z', skip_marked_events=True,
+#                  hide_legend=True, figsize=(12, 7))
+
+#plot_bz_recovery_vs_x(json_path="equatorial_events.json", n_bins=4, show_fit=True, v_alfven=500)
+                      #orbits=[640,1963,3540,3295,850,852])
+
+#plot_bz_recovery_vs_x_auto(json_path="equatorial_events.json", z_range=(-0.3, 0.3),
+#                           min_negative_dip_sec=3, pre_partition_min_positive_sec = 2,
+#                           show_fit=True, x_max=-1.5, stdev_max=2,
+#                           save_event_plots = False, n_rejection_examples = 2, n_bins=4)
 
 
-#_events = json.load(open(os.path.join(_SCRIPT_DIR, 'equatorial_events.json')))
-#for _orb in sorted(int(k) for k, v in _events.items() if v.get('loading_events')):
-#    extract_traj(_orb, events_json='equatorial_events.json')
+_events = json.load(open(os.path.join(_SCRIPT_DIR, 'equatorial_events.json')))
+for _orb in sorted(int(k) for k, v in _events.items() if v.get('loading_events')):
+    extract_traj(_orb, events_json='equatorial_events.json')
 
 #plot_fac_events(b0_ref='start', smooth_sec=30, label_events=False, show_wavelet=False )
 #plot_event_map(['3784a', '3772c', '4035', '3772b', '3789', '3783'])
 #plot_event_map(json_path="equatorial_events.json", color_by_category=True)
+#plot_event_map(json_path="equatorial_events.json", color_by_bz_recovery=True)
+
+
 
 '''
 df, label = load_simulation_json(
